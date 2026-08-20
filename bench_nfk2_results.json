@@ -1,0 +1,206 @@
+{
+ "startup_ms": {
+  "min_ms": 31.9,
+  "med_ms": 33.2,
+  "mean_ms": 33.3,
+  "max_ms": 36.1
+ },
+ "small": {
+  "cold_present": {
+   "fromJSON": {
+    "min_ms": 33.0,
+    "med_ms": 34.2,
+    "mean_ms": 34.4,
+    "max_ms": 37.2
+   },
+   "nfk2": {
+    "min_ms": 29.4,
+    "med_ms": 33.9,
+    "mean_ms": 33.6,
+    "max_ms": 35.2
+   }
+  },
+  "cold_miss": {
+   "fromJSON": {
+    "min_ms": 31.1,
+    "med_ms": 34.0,
+    "mean_ms": 34.2,
+    "max_ms": 38.8
+   },
+   "nfk2": {
+    "min_ms": 31.4,
+    "med_ms": 33.2,
+    "mean_ms": 33.3,
+    "max_ms": 34.3
+   }
+  },
+  "warm_200": {
+   "fromJSON": {
+    "min_ms": 33.3,
+    "med_ms": 33.6,
+    "mean_ms": 33.9,
+    "max_ms": 35.0
+   },
+   "nfk2": {
+    "min_ms": 36.9,
+    "med_ms": 37.4,
+    "mean_ms": 37.3,
+    "max_ms": 37.8
+   },
+   "per_lookup_us": {
+    "fromJSON": 167.81,
+    "nfk2": 186.97
+   }
+  },
+  "floor_readfile_json_ms": {
+   "min_ms": 32.3,
+   "med_ms": 32.7,
+   "mean_ms": 33.1,
+   "max_ms": 34.3
+  },
+  "floor_readfile_nfd2_ms": {
+   "min_ms": 27.5,
+   "med_ms": 30.6,
+   "mean_ms": 29.9,
+   "max_ms": 31.6
+  },
+  "floor_fromjson_parse_ms": {
+   "min_ms": 33.2,
+   "med_ms": 33.9,
+   "mean_ms": 34.4,
+   "max_ms": 36.1
+  }
+ },
+ "medium": {
+  "cold_present": {
+   "fromJSON": {
+    "min_ms": 66.3,
+    "med_ms": 78.6,
+    "mean_ms": 77.7,
+    "max_ms": 83.0
+   },
+   "nfk2": {
+    "min_ms": 38.9,
+    "med_ms": 42.0,
+    "mean_ms": 41.9,
+    "max_ms": 45.2
+   }
+  },
+  "cold_miss": {
+   "fromJSON": {
+    "min_ms": 67.7,
+    "med_ms": 77.1,
+    "mean_ms": 78.2,
+    "max_ms": 90.5
+   },
+   "nfk2": {
+    "min_ms": 32.5,
+    "med_ms": 42.2,
+    "mean_ms": 41.7,
+    "max_ms": 49.4
+   }
+  },
+  "warm_200": {
+   "fromJSON": {
+    "min_ms": 76.7,
+    "med_ms": 78.3,
+    "mean_ms": 78.2,
+    "max_ms": 79.6
+   },
+   "nfk2": {
+    "min_ms": 44.2,
+    "med_ms": 45.6,
+    "mean_ms": 45.2,
+    "max_ms": 45.7
+   },
+   "per_lookup_us": {
+    "fromJSON": 391.34,
+    "nfk2": 227.93
+   }
+  },
+  "floor_readfile_json_ms": {
+   "min_ms": 37.6,
+   "med_ms": 38.5,
+   "mean_ms": 38.5,
+   "max_ms": 39.3
+  },
+  "floor_readfile_nfd2_ms": {
+   "min_ms": 39.9,
+   "med_ms": 40.2,
+   "mean_ms": 41.1,
+   "max_ms": 43.3
+  },
+  "floor_fromjson_parse_ms": {
+   "min_ms": 87.5,
+   "med_ms": 87.6,
+   "mean_ms": 88.2,
+   "max_ms": 89.5
+  }
+ },
+ "large": {
+  "cold_present": {
+   "fromJSON": {
+    "min_ms": 204.0,
+    "med_ms": 210.0,
+    "mean_ms": 210.0,
+    "max_ms": 217.5
+   },
+   "nfk2": {
+    "min_ms": 69.9,
+    "med_ms": 81.2,
+    "mean_ms": 81.2,
+    "max_ms": 91.3
+   }
+  },
+  "cold_miss": {
+   "fromJSON": {
+    "min_ms": 205.9,
+    "med_ms": 210.1,
+    "mean_ms": 210.1,
+    "max_ms": 212.7
+   },
+   "nfk2": {
+    "min_ms": 68.3,
+    "med_ms": 80.8,
+    "mean_ms": 78.4,
+    "max_ms": 83.4
+   }
+  },
+  "warm_200": {
+   "fromJSON": {
+    "min_ms": 198.2,
+    "med_ms": 210.5,
+    "mean_ms": 207.0,
+    "max_ms": 212.4
+   },
+   "nfk2": {
+    "min_ms": 82.8,
+    "med_ms": 84.5,
+    "mean_ms": 84.4,
+    "max_ms": 86.0
+   },
+   "per_lookup_us": {
+    "fromJSON": 1052.37,
+    "nfk2": 422.63
+   }
+  },
+  "floor_readfile_json_ms": {
+   "min_ms": 57.3,
+   "med_ms": 58.2,
+   "mean_ms": 58.5,
+   "max_ms": 60.0
+  },
+  "floor_readfile_nfd2_ms": {
+   "min_ms": 67.6,
+   "med_ms": 80.0,
+   "mean_ms": 79.0,
+   "max_ms": 89.3
+  },
+  "floor_fromjson_parse_ms": {
+   "min_ms": 255.6,
+   "med_ms": 262.3,
+   "mean_ms": 264.7,
+   "max_ms": 276.1
+  }
+ }
+}
