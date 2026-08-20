@@ -13,6 +13,7 @@ Scenarios (per dataset size):
 
 Every scenario asserts output correctness against the JSON source.
 """
+import argparse
 import json
 import os
 import statistics
@@ -21,6 +22,9 @@ import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 KV = f"{BASE}/kv.nix"
+KV_LABEL = "kvl"
+EXT = "nfd"
+OUT = f"{BASE}/bench_results.json"
 SIZES = ["small", "medium", "large"]
 COLD_REPS = 15
 WARM_REPS = 3
@@ -62,6 +66,15 @@ def stats(ts):
 
 
 def main():
+    global KV, EXT, KV_LABEL, OUT
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--kv", default=KV)
+    ap.add_argument("--ext", default=EXT)
+    ap.add_argument("--label", default=KV_LABEL)
+    ap.add_argument("--out", default=OUT)
+    a = ap.parse_args()
+    KV, EXT, KV_LABEL, OUT = a.kv, a.ext, a.label, a.out
+
     # one-time startup floor (no file access at all)
     ts, _ = timeit('"hello"', 5)
     startup = stats(ts)
@@ -69,7 +82,7 @@ def main():
     results = {"startup_ms": startup}
     for size in SIZES:
         J = f"{BASE}/data/{size}.json"
-        N = f"{BASE}/data/{size}.nfd"
+        N = f"{BASE}/data/{size}.{EXT}"
         obj = json.load(open(J))
         names = list(obj)
         key0 = names[0]
@@ -88,7 +101,7 @@ def main():
         ts_kv, out_kv = timeit(e_kv, COLD_REPS, raw=True)
         assert all(o.rstrip("\n") == expected for o in out_fj), "fromJSON cold mismatch"
         assert all(o.rstrip("\n") == expected for o in out_kv), "kvl cold mismatch"
-        r["cold_present"] = {"fromJSON": stats(ts_fj), "kvl": stats(ts_kv)}
+        r["cold_present"] = {"fromJSON": stats(ts_fj), KV_LABEL: stats(ts_kv)}
 
         # ---- 2. cold miss --------------------------------------------------
         e_fj2 = f'builtins.hasAttr "{MISS_KEY}" (builtins.fromJSON (builtins.readFile {J}))'
@@ -97,7 +110,7 @@ def main():
         ts_kv, out_kv = timeit(e_kv2, COLD_REPS)
         assert all(o.strip() == "false" for o in out_fj), "fromJSON miss mismatch"
         assert all(o.strip() == "false" for o in out_kv), "kvl miss mismatch"
-        r["cold_miss"] = {"fromJSON": stats(ts_fj), "kvl": stats(ts_kv)}
+        r["cold_miss"] = {"fromJSON": stats(ts_fj), KV_LABEL: stats(ts_kv)}
 
         # ---- 3. warm batch: WARM_KEYS lookups in a single eval ------------
         e_fj3 = (
@@ -116,10 +129,10 @@ def main():
         assert all(int(o.strip()) == exp_sum for o in out_kv), "kvl warm sum mismatch"
         r["warm_200"] = {
             "fromJSON": stats(ts_fj),
-            "kvl": stats(ts_kv),
+            KV_LABEL: stats(ts_kv),
             "per_lookup_us": {
                 "fromJSON": round(statistics.median(ts_fj) / WARM_KEYS * 1e6, 2),
-                "kvl": round(statistics.median(ts_kv) / WARM_KEYS * 1e6, 2),
+                KV_LABEL: round(statistics.median(ts_kv) / WARM_KEYS * 1e6, 2),
             },
         }
 
@@ -127,7 +140,7 @@ def main():
         ts, _ = timeit(f'builtins.stringLength (builtins.readFile {J})', WARM_REPS)
         r["floor_readfile_json_ms"] = stats(ts)
         ts, _ = timeit(f'builtins.stringLength (builtins.readFile {N})', WARM_REPS)
-        r["floor_readfile_nfd_ms"] = stats(ts)
+        r[f"floor_readfile_{EXT}_ms"] = stats(ts)
         ts, out_ = timeit(
             f'builtins.length (builtins.attrNames (builtins.fromJSON (builtins.readFile {J})))',
             WARM_REPS,
@@ -138,7 +151,7 @@ def main():
         results[size] = r
         print(f"== {size} done", flush=True)
 
-    out_path = f"{BASE}/bench_results.json"
+    out_path = OUT
     with open(out_path, "w") as f:
         json.dump(results, f, indent=1)
     print(json.dumps(results, indent=1))

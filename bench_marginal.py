@@ -5,6 +5,7 @@ For n in N_LIST, time one `nix eval` that performs exactly n lookups (file
 already loaded once inside the eval).  Least-squares slope over (n, time)
 gives the marginal cost per lookup, free of load/startup cost.
 """
+import argparse
 import json
 import os
 import subprocess
@@ -21,6 +22,9 @@ def lsq(xs, ys):
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 KV = f"{BASE}/kv.nix"
+KV_LABEL = "kvl"
+EXT = "nfd"
+OUT = f"{BASE}/bench_marginal.json"
 N_LIST = [10, 50, 100, 200, 400]
 REPS = 5
 SIZES = ["small", "medium", "large"]
@@ -37,14 +41,22 @@ def nix_eval(expr):
 
 
 def main():
+    global KV, EXT, KV_LABEL, OUT
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--kv", default=KV)
+    ap.add_argument("--ext", default=EXT)
+    ap.add_argument("--label", default=KV_LABEL)
+    ap.add_argument("--out", default=OUT)
+    a = ap.parse_args()
+    KV, EXT, KV_LABEL, OUT = a.kv, a.ext, a.label, a.out
     out = {}
     for size in SIZES:
         J = f"{BASE}/data/{size}.json"
-        N = f"{BASE}/data/{size}.nfd"
+        N = f"{BASE}/data/{size}.{EXT}"
         obj = json.load(open(J))
         names = list(obj)
         out[size] = {}
-        for method in ["fromJSON", "kvl"]:
+        for method in ["fromJSON", KV_LABEL]:
             xs, ys = [], []
             for n in N_LIST:
                 keys = names[:n]
@@ -76,7 +88,7 @@ def main():
                 "load_ms": round(intercept * 1000, 1),
                 "points": list(zip(xs, [round(t * 1000, 1) for t in ys])),
             }
-    with open(f"{BASE}/bench_marginal.json", "w") as f:
+    with open(OUT, "w") as f:
         json.dump(out, f, indent=1)
     print(json.dumps(out, indent=1))
 
