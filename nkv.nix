@@ -56,7 +56,7 @@
 # Nix import cache keeps it for the rest of the eval). `count` reads
 # every shard — offline use.
 #
-# See README.md and REPORT.md for the format and benchmarks.
+# See README.md for the format and benchmarks.
 
 let
   H = 14;    # header width

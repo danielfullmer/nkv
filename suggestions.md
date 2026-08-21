@@ -2,7 +2,7 @@
 
 **Superseded (2026-08-21):** the 24-bit fingerprint field was removed from
 the slot — the probe now byte-compares the key at every occupied slot
-(see `REPORT.md`). This makes Tier 2 (v4 hex fp) moot, turns the
+(see `README.md`). This makes Tier 2 (v4 hex fp) moot, turns the
 "drop the fingerprint, compare keys directly" row under *Considered and
 rejected* into the implemented design, and the fp-era 15-byte slot
 (fp `dec4` + keyOff `dec4` + keyLen `dec3` + valLen `dec3` + pad) no longer

@@ -1,303 +1,259 @@
 # fast-nix-lookup
 
-Fast key/value lookup for native Nix eval. Instead of `builtins.fromJSON` + attrset access (which parses the whole file on every `nix eval`), the table is precomputed into an **nkv** file that Nix can probe with byte reads, string slicing, and `hashString` — no parse.
+Fast key/value lookup for static string→value tables in **pure Nix** (no `builtins.exec`, no foreign interpreters, no per-eval parse of the data). Instead of `builtins.fromJSON` + attrset access — which parses the whole file on every `nix eval` — the table is precomputed into an **nkv** file that Nix probes with byte reads (`substring`) and `hashString`: one `sha256` per lookup seeds a linear-probe walk over a power-of-two table at load ≤ 0.8, and the base-255 decode alphabet is a format constant in `nkv-table.nix`, imported once per eval.
 
-```nix
-let db = (import ./nkv.nix) ./data/large.nkv;
-in db.get "pkgs484.env795.nix877.pkgs793"
-# -> chde4cf665ukuewyy-tx
-```
+    let db = (import ./nkv.nix) ./data/large.nkv;
+    in db.get "pkgs484.env795.nix877.pkgs793"
+    # -> chde4cf665ukuewyy-tx                 (~57 ms cold total / ~23 ms work)
 
 For very large tables, or evals that do only a few lookups, the same format can be sharded so a lookup reads one small shard file instead of the whole table (`nkv.nix`):
 
-```nix
-let db = import ./nkv.nix { digits = 2; dir = ./data/large_shards; };
-in db.get "pkgs484.env795.nix877.pkgs793"   # only the key's 1-of-256 shard is read
-```
+    let db = import ./nkv.nix { digits = 2; dir = ./data/large_shards; };
+    in db.get "pkgs484.env795.nix877.pkgs793"   # only the key's 1-of-256 shard is read
+    # -> chde4cf665ukuewyy-tx                 (~34 ms cold total / ~1.2 ms work)
 
-A single cold lookup (N = 1) costs ~34 ms sharded / ~57 ms single-file nkv
-vs ~210 ms for `builtins.fromJSON`. On the data work — total minus the 33.0 ms
-`nix eval` startup floor both sides pay (measured 23.2–38.7 for an empty eval) —
-that is ≈146× sharded / 7.6× single-file: the ~34 ms sharded total sits at the
-startup floor, and its data work is ~1.2 ms (one ~46–62 KB shard read + one
-probe) against `fromJSON`'s ~175 ms `readFile`+parse of the 13.9 MB file. nkv
-beats `fromJSON` on the data work at every measured query count (1–200 lookups/eval)
-on every table measured; on the 31,904-attr nixpkgs-multiverse workload the
-sharded variant is fastest through ~100 lookups and single-file takes over at
-200. Details in REPORT.md and multiverse-faster/.
+A single cold lookup (N = 1) costs ~34 ms sharded / ~57 ms single-file nkv vs ~210 ms for `builtins.fromJSON`. On the data work — total minus the 33.0 ms `nix eval` startup floor both sides pay (measured 23.2–38.7 for an empty eval) — that is ≈146× sharded / 7.6× single-file: the ~34 ms sharded total sits at the startup floor, and its data work is ~1.2 ms (one ~46–62 KB shard read + one probe) against `fromJSON`'s ~175 ms `readFile`+parse of the 13.9 MB file. nkv beats `fromJSON` on the data work at every measured query count (1–200 lookups/eval) on every table measured; on the 31,904-attr nixpkgs-multiverse workload the sharded variant is fastest through ~100 lookups and single-file takes over at 200. Full per-point multiverse tables in [`multiverse-faster/README.md`](multiverse-faster/README.md).
 
 ## Why not `builtins.fromJSON`?
 
-A single lookup in the JSON version looks like:
+The naive implementation:
 
-```nix
-( builtins.fromJSON (builtins.readFile "./large.json") )."some.key"
-```
+    ( builtins.fromJSON (builtins.readFile "./large.json") )."some.key"
 
-`builtins.fromJSON` costs ~207–214 ms wall per eval on the 200k-key table —
-~173–181 ms of `readFile`+parse work on top of the ~33 ms `nix eval` floor —
-and the cost is essentially flat from 1 to 200 lookups per eval: the JSON
-parse is the whole bill and lookup adds nothing measurable. nkv is
-7.6× faster single-file and ≈146× with 256 shards on the data work (N = 1), and
-stays ahead of `fromJSON` at every measured N (up to 200 lookups/eval) on every
-table. Single-lookup cost scales with
-file size — measured 33–57 ms wall per eval (work 0.0–22.9 ms: 0.0–3.1 ms
-sharded, 12.4–22.9 ms single-file) — and with shard count at higher N, since each distinct
-shard file is read once per eval. The one regime where `fromJSON` wins is a
-whole-table scan: 31,904 lookups with all values serialized take 0.38 s
-`fromJSON` vs 0.89 s / 2.49 s nkv single / sharded — one parse amortized
-over 31,904 attrset lookups beats 31,904 sha256+probe+decode cycles.
+parses the whole 13.9 MB file into a Nix attrset **on every lookup**: ~207–214 ms wall (173–181 ms data work) at 200k entries, and the cost is *flat* in the number of lookups in one eval — the parse happens once and attrset access is O(1), so 1 and 200 lookups cost the same (173.3–174.7 ms work). That is what this project replaces.
+
+Measured at a single lookup (N = 1, data work in parentheses): `fromJSON` 33.5–57.3 ms wall (work 0.0–22.9), single-file nkv 34.3–59.7 ms (work 12.4–22.9), sharded nkv 34.4–58.1 ms (work 0.0–3.1) — at small tables the methods are within a few ms because all of it is Nix's own eval startup; the separation appears in the data work, and grows with table size (7.6× on the 200k table, 11–18× on the multiverse tables).
+
+At high lookup counts the advantage is inverted: `fromJSON`'s parse-once/index-many model beats nkv's per-lookup readFile + decode for bulk scans (measured: 0.38 s vs 0.89 / 2.49 s at 31,904 lookups/eval on the nixpkgs-multiverse data — see Performance). nkv is for the common case of one or a few lookups per eval.
 
 ## Design constraints (this Nix)
 
-The target is Nix 2.34.7 with a stripped-down builtin set. What is missing shapes the format:
-
-- **No `builtins.parseInt` (and no `%`, no `builtins.mod`, no `builtins.hasSuffix`, no `or`)** — integer arithmetic is limited to `/` (truncating division), `builtins.div`, `builtins.bitAnd`; the design works around it with fixed-width fields decoded by per-byte table lookups (one width-specialized thunk per file) and power-of-two tables masked with `bitAnd`.
-- **Hash via `builtins.hashString "sha256"`** — stable across processes and platforms, so the probe slot and shard a key hashes to at build time match at eval time.
-- **Binary-safe strings** — Nix I/O strings are arbitrary bytes minus NUL; only string *literals in source* are UTF-8-decoded. Raw bytes from `readFile` pass through `substring`, `stringLength`, and `sha256` untouched (verified on 2.34.7). The builder therefore refuses NUL, and no file byte is `0x00` — the one byte Nix's `readFile` rejects (base-255 digits occupy `0x01`–`0xFE`; data bytes are raw UTF-8).
-- **One source-literal gotcha** — the lexer normalizes a raw `0x0D` byte in `.nix` *source* to `0x0A` (verified byte-for-byte). Raw-bytes data files are unaffected (`readFile` output is raw), but any table material emitted into Nix source must escape `0x0D` as `\r` — which is exactly how the generated decode table (below) is written.
-- **No in-eval mutation** — the lookup builds one string (the value) from `substring` slices of the file; the index is walked by recursion over integer positions, never by re-reading the file.
+- **No `builtins.parseInt`** in this Nix — integer math is done with `/`, `div`, `bitAnd`, and width-specialized decode thunks; probing uses power-of-two table sizes so the wrap is a `bitAnd` mask.
+- `hashString` gives sha1/sha256; sha256 is the only one with stable hex across Nix versions/platforms, so probe slots and shard names match between build time (Python) and eval time (Nix).
+- Nix strings are binary-safe *I/O* strings (arbitrary bytes minus NUL); only source literals are UTF-8-decoded, so arbitrary bytes can be stored and sliced.
 
 ## File format: nkv (binary hash index)
 
-Open addressing: one `sha256` per lookup and linear probing over a power-of-two table at load ≤ 0.8, where every occupied slot is confirmed by a byte-for-byte key compare. Numeric fields are **base-255** bytes, 1–4 wide — per-field widths are chosen at build time and stored in the header (one byte per digit, `byte = digit + 1`, big-endian digits) — so no file byte is `0x00`, the one byte Nix's `readFile` rejects.
+nkv stores N (key, value) pairs in an open-addressing, linear-probing table (load ≤ 0.8) over the `sha256(key)` slot. Probing reads the key length at every slot, so **every occupied slot on the walk is byte-compared against the target key** — the probe can only ever add key reads, never return a wrong value. Numeric fields use **base-255, 1–4-byte widths**, with per-field widths stored in the header (big-endian; `byte = digit + 1`, so digits 0–253 are stored in bytes `0x01`–`0xFE` and no `0x00` byte ever appears in a file).
 
-```
-offset 0              header, 14 bytes
-offset 14             index region, M × EW bytes (EW = koffW + klenW + vlenW, 3–10;
-                      5/6 in the shipped single tables, 4/5 in the 256-shard builds)
-offset 14 + M·EW      data region (interleaved, variable)
-```
+    offset  0  | header (14 bytes; table params)
+    offset 14  | index (M × EW bytes)
+    offset 14 + M·EW | data region (keys and values, interleaved)
 
-**Header (14 bytes):**
+Each key/value pair is written as `key || value` (no separator — the lengths are in the index). The index stores per-slot field-width offsets and lengths in base-255 (1–4 bytes per field, `byte = digit + 1`); the value offset is implicit: value bytes follow the key bytes at `keyOff + keyLen`. `EW = koffW + klenW + vlenW` is the per-slot entry width (3–10 bytes; 5 for small/medium/large with `koffW = 3`, 4 for the large 256-shard build, 6 for the multiverse single-file tables with `vlenW = 2`).
 
-| field      | offset | width | meaning |
-|------------|-------:|------:|---------|
-| magic      | 0      | 4     | `NKV3` |
-| `N`        | 4      | 3     | entry count (base-255) |
-| `M`        | 7      | 4     | table size, power of two (base-255) |
-| `koffW`    | 11     | 1     | width of `keyOff` (1–4) |
-| `klenW`    | 12     | 1     | width of `keyLen` (1–3) |
-| `vlenW`    | 13     | 1     | width of `valLen` (1–3) |
+| field | offset | width |
+|---|---:|---:|
+| magic `"NKV3"` | 0 | 4 |
+| N (key count) | 4 | 3 |
+| M (slot count) | 7 | 4 |
+| koffW | 11 | 1 |
+| klenW | 12 | 1 |
+| vlenW | 13 | 1 |
 
-**Index region** — one EW-byte entry per table slot `s` at offset `14 + EW·s` (`EW = koffW + klenW + vlenW`, 3–10; 5 for the parent tables — `keyOff` 3 + `keyLen` 1 + `valLen` 1, 6 for the multiverse single tables whose largest value length needs 2 base-255 digits, 4/5 for the 256-shard builds whose shard-local offsets fit in 2 digits):
+### Index region (offset `14`)
 
-| field    | offset | width | meaning |
-|----------|-------:|------:|---------|
-| `keyOff` | 0                | 1–4   | absolute file offset of the key; `0` = unused slot |
-| `keyLen` | `koffW`          | 1–3   | key length |
-| `valLen` | `koffW`+`klenW`  | 1–3   | value length (the value is at `keyOff + keyLen`) |
+| field | offset (within slot) | width |
+|---|---:|---:|
+| keyOff | 0 | koffW |
+| keyLen | koffW | klenW |
+| valLen | koffW + klenW | vlenW |
 
-An unused slot is EW bytes of `0x01` (all fields zero); the walk ends at a decoded `keyOff` of 0 (a real key offset is always ≥ `14 + EW·M`). Every occupied slot is read and byte-compared against the key, so a mismatch costs one extra key read and a wrong value is impossible by construction. The data region interleaves key and value bytes in JSON insertion order, so only the key offset is stored per entry — the value offset is implicit.
+A `keyOff` of 0 marks an unused slot. The value bytes are at `keyOff + keyLen`. The slot is EW bytes wide, so `EW = koffW + klenW + vlenW`.
 
-**Decode table — static, not in the file.** The base-255 alphabet (255 bytes `0x01`–`0xFF` → digits 0–254) is a format constant shared by every nkv file, so it is stored in exactly one place: `nkv-table.nix`, a 255-entry attrset (`byte 1-char string → digit`) generated by
+An unused slot is EW bytes of `0x01` (the base-255 encoding of 0); `keyOff = 0` is how the probe walk terminates, and any real keyOff is always ≥ 14 + EW·M.
 
-```sh
-python3 build_nkv.py --write-table nkv-table.nix
-```
-
-`nkv.nix` imports it once per eval (the Nix import cache makes repeat imports free), so the table costs nothing per lookup and no per-file 255 bytes. The file is generated, not hand-edited; it intentionally contains raw non-UTF-8 bytes (Nix accepts them in string literals) with only the four literal-breaking bytes escaped (`0x0A → \n`, `0x0D → \r`, `0x22 → \"`, `0x5C → \\`).
+The base-255 decode table is a **static file** — `nkv-table.nix`, a 255-entry attrset generated by `python3 build_nkv.py --write-table nkv-table.nix` — imported once per eval and shared by both single-file and sharded lookups. It is a pure function of the format (digit `d` → byte `d + 1`, with non-UTF-8 bytes and Nix string-literal breakers escaped), so the checked-in content is always the correct one.
 
 Invariants:
 
 - `s0 = int(h[56:64], 16) AND (M − 1)`; linear probing, bounded by `M` steps. Every occupied slot in the walk is read and key-compared, so the probe can only add key reads — it never returns a wrong value.
 - `M = next_pow2(max(16, ⌈1.25·N⌉))` → load ≤ 0.8 (fixed; no factor flag).
 - base-255 width limits (builder-enforced): `N` / key length / value length < 254³ (~16.4 MB); `M` and offsets < 254⁴ (~4.16 GB); no NUL.
-- Sizes: 1,005 keys → 70,748 B; 50,000 → 3,390,932 B; 200,000 → 13,652,090 B = 0.98× the 13.9 MB JSON (the index region is ~10% of the medium/large files; 14% of small, where the 10,240-byte index at M = 2,048 dominates).
 - Values are opaque: any UTF-8 minus NUL may be stored. String values are returned as-is by `get`; when a value holds a JSON document, `getJson`/`getOrJson` decode it with `builtins.fromJSON` at lookup time (a miss is still `null`).
+
+Measured sizes (flat JSON → nkv, with the static table):
+
+| dataset | keys | flat JSON | nkv | index | ratio |
+|---|---:|---:|---:|---:|---:|
+| small | 1,005 | 68,534 | 70,748 | 10,240 | 1.03× |
+| medium | 50,000 | 3,463,238 | 3,390,932 | 327,680 | 0.98× |
+| large | 200,000 | 13,941,356 | 13,652,090 | 1,310,720 | 0.98× |
+| multiverse versions | 31,904 | 4,833,362 | 5,098,975 | 393,216 | 1.06× |
+| multiverse history | 31,904 | 6,876,612 | 7,142,225 | 393,216 | 1.04× |
+
+Multiverse rows are the flat JSON the builder consumes; `fromJSON` parses the nested `index/*.json` instead (5.48 / 7.84 MB). The index is ~9.6% of the medium/large files (14.5% of small, where the M = 2,048 table is proportionally large; 7.7% / 5.5% of the multiverse singles).
 
 ### Optional file sharding
 
-For very large tables, or evals that do only a few lookups, `build_nkv.py` can split the table into a directory of independent nkv files, one per slice of the key hash:
+Sharding splits the key space by a sha256 hex slice and writes one nkv file per shard: `python3 build_nkv.py INPUT.json --shards 256 --prefix sharded/ --check`. A key lands in `sharded/<h[24:24+d]>.nkv` where `d = 1/2/3` for 16/256/4096 shards.
 
-```sh
-python3 build_nkv.py INPUT.json --shards 256 --prefix sharded/ --check
-```
+- **Every shard file is always written** — including empty ones (valid table, N = 0, M = 16), so `readFile` and the index walk behave identically for empty and non-empty shards.
+- The slice `[24:24+d)` is disjoint from the probe-seed slice `[56:64)` the probing algorithm uses, so sharding does not perturb probe distribution; each shard is a standalone nkv table with its own `M = next_pow2(max(16, ⌈1.25·N_shard⌉))`.
+- The reader (`nkv.nix`) takes `digits` + `dir`, computes the shard name, and `import`s it — lazily, and Nix's import cache makes repeated imports of the same shard within one eval free — so a single lookup touches exactly one shard file.
+- `--check` re-derives shard membership and re-probes every key through the shard files.
 
-- Shard of key `k` = `sharded/<h[24:24+d]>.nkv`, where `h` is the lowercase hex of `sha256(k)` and `d` is the number of digits: `--shards 16/256/4096` → `d = 1/2/3`.
-- **Every shard file is always written** — an empty shard is a valid nkv file with `N = 0`, `M = 16` — so a key always resolves to an existing file.
-- The slice `[24:24+d)` is disjoint from the probe-seed slice `[56:64)` the probing algorithm uses, so sharding does not perturb probe distribution; each shard is a standalone nkv table with its own `M`.
-- Reader: `nkv.nix` — per lookup only the shard the key hashes to is read, and Nix's import cache keeps it for the rest of the eval. The static decode table is shared automatically: `nkv.nix`'s single `import ./nkv-table.nix` is evaluated once per process no matter how many shard files are imported.
-- `--check` in sharded mode re-derives shard membership from the input keys and re-probes every key through the shard files.
-- Measured shard sizes (256 shards): 46,025–62,052 B each on the 200k-key table (EW 4 — shard-local `keyOff` fits in 2 base-255 digits); 10,932–34,558 B and 15,294–50,096 B on the multiverse versions/history tables (EW 5).
+Measured shard sizes (256-shard build, EW 4): 46,025–62,052 B on the 200k table (vs 13.65 MB single file); 10,932–34,558 B and 15,294–50,096 B on the multiverse versions/history shards (EW 5).
 
 ## Lookup algorithm
 
-```
-lookup(key):
-  h  = sha256(key) in lowercase hex
-  s  = int(h[56:64], 16) AND (M - 1)    # initial slot
-  for i in 0..M:                        # bounded walk
-    e    = 14 + EW * ((s + i) AND (M - 1))  # EW from the header (bitAnd wrap, M a power of two)
-    koff = base-255-decode(entry[e .. e+koffW]) # koffW static-table lookups
-    if koff = 0: return null             # unused slot: key absent
-    k    = substring(raw, koff, klen)
-    if k = key: return substring(raw, koff + klen, vlen)
-  unreachable (load < 1 guarantees an unused slot)
-```
+    lookup(key):
+      h  = sha256(key) in lowercase hex
+      s  = int(h[56:64], 16) AND (M - 1)    # initial slot
+      for i in 0..M:                        # bounded walk
+        e    = 14 + EW * ((s + i) AND (M - 1))  # EW from the header (bitAnd wrap, M a power of two)
+        koff = base-255-decode(entry[e .. e+koffW])           # koffW static-table lookups
+        if koff = 0: return null             # unused slot: key absent
+        klen = base-255-decode(entry[e+koffW .. e+koffW+klenW])
+        k    = substring(raw, koff, klen)
+        if k = key:
+          vlen = base-255-decode(entry[e+koffW+klenW .. e+EW])
+          return substring(raw, koff + klen, vlen)
+      unreachable (load < 1 guarantees an unused slot)
 
-- Per probe step: `koffW + klenW + vlenW` static-table lookups for the field offsets/lengths (widths from the header, one width-specialized thunk per width), one `substring` key read, and one string compare — at **every** occupied slot; there is no fingerprint to short-circuit a mismatch.
-- One `sha256` per lookup; a successful walk averages ½(1 + 1/(1−α)) probe steps — ≈ 1.5 at load 0.49, ≈ 2.6 at load 0.76, 3 at the 0.8 cap.
-- Sharded: `sha256(key)[24:26]` selects the shard file first (one lazy import, cached for the eval), then the same probe runs inside that shard.
+- No `parseInt`: base-255 decoding is per-byte static-table lookups (digit = byte − 1) and the walk uses `bitAnd` masks with power-of-two `M`.
+- In the sharded layout, `sha256(key)[24:26]` selects the shard file first (one lazy `import`, cached within the eval); the same probe runs inside it.
 
 ## Nix-side workarounds
 
-- **No `builtins.parseInt`** — every base-255 field decodes one byte at a time through the static `nkv-table.nix` attrset via one width-specialized thunk per width (1–4 lookups per field, width from the header); the probe seed folds the 8 hex chars of the digest through a 16-entry inline table (no `%`: just `* 16 +`, then `bitAnd`-masked to `M − 1`).
-- **No `%`** — probe wrap is `builtins.bitAnd (s + i) (M - 1)` (M is a power of two); the midpoint-free design (hash probing, no binary search) means no other modulo is needed.
-- **No `or`** — the modules use `if x == null then a else b` and plain booleans throughout.
-- **No mutation** — everything is a pure `let`/recursion over the file string; the only "state" is integer positions.
-- **Binary-safe base-255 decoding** — raw `readFile` bytes pass through `substring` untouched; the decode table (an attrset in source) is the only place where bytes meet the lexer, and it escapes the four literal-breaking bytes (see the format section).
-- **List-literal parse quirk (Nix 2.34.7)** — `[db.get "key"]` inside a list literal parses as a two-element list `[<fun>, <str>]` (a dotted function call followed by its argument); the bench harness and tests build lookup lists via `builtins.map` / parenthesized application instead.
-
-Header fields and the table import happen once at import time; each lookup then costs one `hashString`, one 8-char hex fold, and a few `substring`s per probe step.
+- **Hex fold** — a 16-entry inline table folds 8 hex chars into a decimal integer (1–4 table lookups per field, width from the header) to get the probe seed, since `parseInt` is unavailable.
+- **Integer math without `%`** — the hash has no `%`; everything integer is `/`, `div`, `bitAnd` with power-of-two `M`.
+- **Binary-safe decode** — field digits are bytes `0x01`–`0xFE`; value bytes pass through as raw (Nix strings hold arbitrary bytes; UTF-8 decoding is applied to source literals, not to `readFile` results).
+- **No mutation** — Nix eval is pure; the index is read-only at eval time.
+- **Nix 2.34.7 source-literal pitfalls** — bytes that break Nix string literals (0x22, 0x27, 0x5C, 0x0D) are escaped in the generated table; data values with 0x0D are stored as 0x0A.
+- **List-literal parse quirk** — `[db.get "key"]` is parsed as a list literal containing a call; wrap in parens when the return type matters.
+- The header is read once at import time; the table file itself is never parsed (only the static `nkv-table.nix` is imported, and that once per eval).
 
 ## Builder
 
-`build_nkv.py` reads a JSON object and emits nkv files (single file or sharded), with an independent re-parser and `--check`:
+    python3 build_nkv.py INPUT.json OUTPUT.nkv [--check]
+    python3 build_nkv.py INPUT.json --shards {16,256,4096} --prefix DIR/ [--check]
+    python3 build_nkv.py INPUT.json --write-table nkv-table.nix
 
-```sh
-python3 build_nkv.py INPUT.json OUTPUT.nkv [--check]
-python3 build_nkv.py INPUT.json --shards {16,256,4096} --prefix DIR/ [--check]
-python3 build_nkv.py --write-table nkv-table.nix
-```
-
-- Input: a JSON object with string keys and **arbitrary JSON values** — string values are stored raw; non-string values are stored as compact JSON documents, which `getJson`/`getOrJson` decode back.
-- Sharded mode writes `DIR/<h[24:24+d]>.nkv` for every shard, including empty ones (see the sharding subsection); single-file mode is unchanged.
-- `--check` re-parses the file(s) independently — validates magic, field widths, absence of NUL — and re-probes every key through an independent Python probe plus a known miss. In sharded mode, shard membership is re-derived and every key is re-probed through the shard files.
-- Width guards: `N` / key length / value length < 254³ bytes, `M` / offsets < 254⁴, no NUL.
-- Single-file output is byte-identical across rebuilds (no timestamps, insertion-order data region).
-
-`gen_data.py` generates the deterministic test datasets (1k / 50k / 200k keys, seeded RNG).
+- Takes **arbitrary JSON values** (not just strings); non-string values are stored as compact JSON and `get`/`getJson`/`getOrJson` handle retrieval (`getJson` returns the parsed value; a miss is `null`).
+- `--shards` writes one nkv file per shard; **every shard file is always written**, including empty shards (valid table, N = 0, M = 16), so `readFile` and the index walk behave identically for empty and non-empty shards.
+- `--check` re-derives shard membership and re-probes every key through the shard files.
+- Width guards (reject inputs that would overflow the field widths).
+- Single-file output is byte-identical across runs (deterministic key ordering).
+- **Cross-language hash identity** — the builder's Python `hashlib.sha256(k).hexdigest()` is byte-identical to Nix's `hashString "sha256"`: same probe seed `int(h[56:64], 16) & (M − 1)`, same shard name, which the `--check` round-trip (build in Python, probe in Nix) proves.
+- `gen_data.py` generates the small/medium/large test tables (1k / 50k / 200k, seeded RNG).
 
 ## Usage
 
-Nix 2.34.7+ (uses `hashString` and byte-safe `substring`; no `builtins.parseInt`).
+Requires Nix 2.34.7+ (no flakes; plain `import` of a `.nix` file with path arguments).
 
-```nix
-let db = (import ./nkv.nix) ./data/large.nkv;
-in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
-```
+    db = (import ./nkv.nix) ./data/large.nkv;
+    db.get "some.key"          # -> value string or null
+    db.getOr "some.key" "dflt" # -> value or "dflt"
+    db.has "some.key"          # -> true / false
+    db.count                   # -> N (header field)
+    db.tableSize               # -> M (header field)
 
-`get` returns `null` on a miss. `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string when the value holds a JSON document (a miss still returns `null`). The module asserts the `NKV3` magic and the field widths at import.
-
-Sharded nkv (`nkv.nix`) takes a directory built with `--shards` (`digits` must match the shard count):
-
-```nix
-let db = import ./nkv.nix { digits = 2; dir = ./data/large_shards; };
-in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.getJson "k"; db.count }
-```
-
-Importing the module is lazy — no shard file is read until a lookup is forced. Per lookup only the key's shard is read. `db.count` imports every shard file — offline / inspection use only.
+- A missing key returns `null` (not an error).
+- `getJson` / `getOrJson` — same, but the value is run through `builtins.fromJSON` on hit (for values that store a JSON document); a miss is still `null`.
+- `import` asserts the `NKV3` magic and the field widths (koffW/klenW/vlenW ∈ 1..4), so a wrong/corrupt file fails loudly at import time, not mid-lookup.
+- Sharded: `import ./nkv.nix { digits = 2; dir = ./data/large_shards; }` — `digits` selects which `sha256` hex slice names the shard (1 → 16, 2 → 256, 3 → 4096 shards; must match what the builder was given) and `dir` is the shard directory. Lookup is lazy — no shard file is read until a lookup forces one, and Nix's import cache makes repeated imports of the same shard within one eval free. `db.count` imports **all** shards (it is the sum of the per-shard header `N` fields) — use it offline, not in a hot path.
 
 ## Correctness
 
-Each dataset is cross-checked against the `fromJSON` oracle in `test_correctness.nix` (every key, plus a known miss, plus `count`/`tableSize`):
+    for s in small medium large; do
+      python3 build_nkv.py data/$s.json data/$s.nkv --check
+      nix eval --impure --json --expr "(import ./test_correctness.nix) \"$s\""
+    done
 
-```sh
-python3 gen_data.py
-python3 build_nkv.py --write-table nkv-table.nix
-for s in small medium large; do
-  python3 build_nkv.py data/$s.json data/$s.nkv --check
-  nix eval --impure --json --expr '(import ./test_correctness.nix) "$s"'
-done
-```
+evaluates `ok = true`, `mismatchCount = 0` — the builder's `--check` (an independent re-parser + probe of every key) and the Nix-side oracle (`get` vs `builtins.fromJSON` on the source JSON, 251,005 lookups total) agree on every key, and a known-missing key resolves to `null` on both sides.
 
-Expected: `ok = true`, `mismatchCount = 0` on all three datasets (251,005 oracle lookups total). The builder's own `--check` independently re-probes every key at build time.
+Sharded correctness: `python3 build_nkv.py data/large.json --shards 256 --prefix data/large_shards/ --check` re-derives shard membership and re-probes all 200,000 keys through the shard files (0 mismatches, miss → `None`). The multiverse single-file and sharded indexes (256 shards each) are checked against `fromJSON` in `multiverse-faster/test_correctness.nix` and `multiverse-faster/test_correctness_shards.nix`: `mismatches = 0`, misses → `null`, `count = 31904` for both datasets — 127,616 multiverse lookups (31,904 × 2 datasets × {single, sharded}).
 
-Sharded correctness: `python3 build_nkv.py data/large.json --shards 256 --prefix data/large_shards/ --check` re-derives shard membership and re-probes all 200,000 keys through the shard files (0 mismatches, miss → `None`). The multiverse sharded indexes (256 shards each) are checked against `fromJSON` in `multiverse-faster/test_correctness_shards.nix`: `mismatches = 0`, misses → `null`, `count = 31904` for both datasets.
+Total: 251,005 parent single-file + 200,000 parent sharded + 127,616 multiverse lookups, 0 mismatches, all misses → `null`.
 
 ## Performance summary
 
-One cold `nix eval` per point (median of 7; the n = 200 row is min-of-7, `work`
-paired at the min-total run), all methods in the same session; harness in
-`benchmarks/bench.py`, raw results in `benchmarks/bench_results.json`. The harness first measures the
-**Nix load floor** — a cold empty eval with the same flags
-(`nix eval --impure --raw --expr '""'`, no expression work: process spawn +
-runtime/evaluator init + output), 33.0 ms median this run (23.2–38.7) — and
-then reports each method's **total** and **work = total − floor** (paired per
-run). Cells show `total (work) ms`; the × multiplier is on work (fromJSON work
-÷ method work), so the ~33 ms startup floor drops out of both. The n=0 point
-for `fromJSON` on the 200k table additionally forces all key names (a count),
-so it overstates plain parse cost; n=0 for the multiverse tables reads one
-field.
+One cold `nix eval` per (method, table, n) point; n ∈ {0, 1, 5, 10, 30, 100, 200} lookups per eval, median of 7 runs (n = 200 row is the min of 7 — the most variable point; its work figure is paired with the min-total run). Harness: `benchmarks/bench.py`; results: `benchmarks/bench_results.json`.
 
-**Parent, large (200,000 keys; 13.9 MB JSON / 13.7 MB `.nkv`; 256 shards of 46–62 KB):**
+The floor is a cold empty `nix eval --impure --raw --expr '""'` (33.0 ms median this run; 23.2–38.7 range); total and work figures are that subtraction, paired per run. `×` on work is fromJSON-work ÷ method-work. The n = 0 `fromJSON` point on the 200k table additionally forces all key names (a count), so it overstates plain parse cost; n = 0 for the multiverse tables reads one field. For `nkv`, n = 0 is `db.count` — a whole-table `readFile` plus a header read (the count is a header field, no slot walk); `nkvs` has no n = 0 point, so its n = 1 row is the intercept. Environment: Nix 2.34.7+1 (non-FLAKE native eval), Linux x86-64 (Ryzen Threadripper 3970X), files hot in page cache; wall clock is `time.perf_counter` around subprocess `nix eval` invocations.
+
+Cost model per `nix eval` doing n lookups (`floor` = the measured Nix load floor):
+
+    fromJSON(n) ≈ floor + readFile(JSON) + parse(JSON) + sub-ms·n
+    nkv(n)     ≈ floor + readFile(.nkv) + probe-cost·n
+    nkvs(n)    ≈ floor + Σ readFile(shard) for distinct shards hit + probe-cost·n
+
+`fromJSON` reads and parses the whole file on the first lookup, then attrset access is O(1) — its per-lookup cost after the parse is negligible. nkv pays readFile + one probe per lookup.
+
+Large table (200,000 keys, 13.9 MB JSON / 13.7 MB nkv) — total ms (work ms in parentheses); bold = best work per row:
 
 | lookups/eval | fromJSON | nkv | nkvs |
 |---:|---:|---:|---:|
 | 0 | 259.8 (225.0) | 58.6 (25.7) | — (no load point) |
 | 1 | 210.0 (174.7) | 56.7 (22.9) (7.6×) | **34.3 (1.2)** (≈146×) |
-| 5 | 208.1 (175.2) | 58.0 (25.0) (7.0×) | 34.9 (1.3) (≈135×) |
-| 10 | 213.5 (181.4) | 59.4 (26.0) (7.0×) | 35.1 (1.4) (≈130×) |
-| 30 | 212.4 (178.0) | 57.7 (24.8) (7.2×) | 34.5 (2.8) (≈64×) |
-| 100 | 210.4 (177.7) | 59.1 (25.0) (7.1×) | 43.1 (9.8) (≈18×) |
-| 200 | 207.0 (173.3) | 59.3 (26.0) (6.7×) | 46.2 (7.5) (≈23×) |
+| 5 | 208.1 (175.2) | 58.0 (25.0) (7.0×) | **34.9 (1.3)** (≈135×) |
+| 10 | 213.5 (181.4) | 59.4 (26.0) (7.0×) | **35.1 (1.4)** (≈130×) |
+| 30 | 212.4 (178.0) | 57.7 (24.8) (7.2×) | **34.5 (2.8)** (≈64×) |
+| 100 | 210.4 (177.7) | 59.1 (25.0) (7.1×) | **43.1 (9.8)** (≈18×) |
+| 200 | 207.0 (173.3) | 59.3 (26.0) (6.7×) | **46.2 (7.5)** (≈23×) |
 
-Output sizes per point: 6 / 66 / 195 / 502 / 1,359 / 4,285 / 8,656 B.
+(The n=200 row is the min-of-7 with work paired at the min-total run — see methodology above.)
 
-Single cold lookup by dataset size, median of 7 runs, `total (work)` ms
-(fromJSON / nkv; multipliers on work): 1k keys 34.9 (0.1) / 34.3 (1.1) —
-parity, both startup-bound; 50k 80.2 (45.9) / 39.7 (4.9), 9.4×; 200k
-210.0 (174.7) / 56.7 (22.9), 7.6×, vs 34.3 (1.2) ms sharded, ≈146×
-(1k/50k: `benchmarks/bench_marginal.json`; 200k: `benchmarks/bench_results.json`).
+Output size of the evaluated value (JSON string, n = 200): 6 / 66 / 195 / 502 / 1,359 / 4,285 / 8,656 B for n = 0/1/5/10/30/100/200.
 
-**Multiverse (31,904 attrs each; multipliers on work; `fromJSON` parses the
-nested `index/*.json`):** versions 5.5 MB JSON / 5.1 MB `.nkv` — fromJSON
-155–158 ms total (work 121–127) vs nkv 43–46 ms (8–12×) and nkvs 35–51 ms
-(7–42×); history 7.8 MB JSON / 7.1 MB `.nkv` — fromJSON 253–259 ms total
-(work 221–228) vs nkv 45–51 ms (11–18×) and nkvs 33–54 ms (21–149× at
-N ≤ 100; 7.3–11.5× at N = 200; at N = 1 the sharded work rounds to 0.0 ms).
-Full per-point tables in
-[REPORT.md](REPORT.md) and
-[`multiverse-faster/README.md`](multiverse-faster/README.md).
+Single cold lookup (N = 1) by table size — total ms (work ms):
 
-**Reading the numbers:**
+| table | fromJSON | nkv single | nkv sharded |
+|---|---:|---:|---:|
+| 1,005 keys | 34.9 (0.1) | 34.3 (1.1) — parity | 34.3 (1.1) |
+| 50,000 keys | 80.2 (45.9) | 39.7 (4.9) — 9.4× | 34.3 (1.1) |
+| 200,000 keys | 210.0 (174.7) | 56.7 (22.9) — 7.6× | 34.3 (1.2) — ≈146× |
 
-- **The intercept is the game, and the split shows what it is.** `fromJSON`
-  is flat (work ~173–181 ms on 200k, ~121–127 ms versions / ~221–228 ms
-  history) because it must parse the whole file regardless of how many keys
-  are asked for; its per-lookup cost after the parse is negligible.
-- **Sharding wins the low-query regime.** nkvs pays one small-shard
-  readFile per *new* shard (~0.1–0.2 ms, import-cached for the eval)
-  instead of a 13.7 MB readFile: at 1 lookup its **work is ~1.2 ms**
-  (multiverse: ≈0–3 ms) — the ~34 ms total sits at the measured 33.0 ms Nix
-  load floor (23.2–38.7) — ≈146× the data work of `fromJSON` on 200k keys
-  (1.2 vs 174.7 ms).
-- **Crossover with single-file nkv:** on the 5.1–7.1 MB multiverse tables
-  nkvs is ahead through n = 100 (versions: 42.5 vs 46.1 ms total; work 10.1
-  vs 15.2; history: 44.0 vs 49.3, work 10.6 vs 19.5); at n = 200
-  single-file takes over (versions min row 44.2 vs 50.1; work 11.1 vs 16.5;
-  history 49.7 vs 51.7, work 16.2 vs 19.2) — crossover ~100–200 lookups/eval.
-  On the 13.7 MB 200k-key table nkvs is ahead across the whole measured
-  range (n = 200: 46.2 vs 59.3 min row, work 7.5 vs 26.0; 52.9 vs 63.8
-  median, work 19.5 vs 32.2).
-- **Bulk scans tip back to `fromJSON`** — if an eval touches most of the
-  table, parsing once and indexing the attrset beats per-lookup file
-  slicing: the measured 31,904-lookup scan (all values serialized) takes
-  0.38 s fromJSON vs 0.89 / 2.49 s nkv / nkvs.
+1k / 50k rows from `benchmarks/bench_marginal.json`; 200k rows from `benchmarks/bench_results.json`.
+
+Multiverse (nixpkgs-multiverse, 31,904 attrs each) — versions 5.5 MB JSON / 5.1 MB `.nkv`: fromJSON 155–158 total (121–127 work) vs nkv 43–46 (8–12×) vs nkvs 35–51 (7–42×); history 7.8 / 7.1 MB: fromJSON 253–259 (221–228) vs nkv 45–51 (11–18×) vs nkvs 33–54 (21–149× at N ≤ 100; 7.3–11.5× at N = 200; at N = 1 the sharded work rounds to 0.0 ms).
+
+Full per-point tables in [`multiverse-faster/README.md`](multiverse-faster/README.md).
+
+### Reading the numbers
+
+- **The intercept, not the slope, is where nkv wins.** `fromJSON` pays its readFile + parse once (~173–181 ms on 200k; 121–127 versions; 221–228 history) and then lookup is nearly free within the eval. nkv pays ~0.1–0.5 ms per lookup in-process, plus the per-import file cost.
+- **Sharding wins the low-query regime.** nkvs pays one small-shard readFile per *new* shard (~0.1–0.2 ms, import-cached for the eval) instead of a 13.7 MB readFile: at 1 lookup its **work is ~1.2 ms** (multiverse: ≈0–3 ms) — the ~34 ms total sits at the measured 33.0 ms Nix load floor (23.2–38.7) — ≈146× the data work of `fromJSON` on 200k keys (1.2 vs 174.7 ms); at n = 200 the work has risen to 7.5–19.5 ms (200k), 16.5–18.7 ms (versions), 19.2–23.4 ms (history) as queries spread across the 256 shards, ~0.03–0.12 ms/lookup.
+- **Crossover.** On the multiverse tables nkvs is ahead through n = 100 (versions 42.5 vs 46.1 total, work 10.1 vs 15.2; history 44.0 vs 49.3, work 10.6 vs 19.5) and single-file takes over at n = 200 (versions 44.2 vs 50.1, work 11.1 vs 16.5; history 49.7 vs 51.7, work 16.2 vs 19.2) — the crossover is between ~100 and ~200 lookups/eval. On the 13.7 MB 200k table nkvs is ahead across the whole measured range (at n = 200: 46.2 vs 59.3 ms min row, work 7.5 vs 26.0; 52.9 vs 63.8 median, work 19.5 vs 32.2).
+- **Bulk scans tip back to `fromJSON`.** When one evaluation touches most of the table, parse-once/index-many wins: a 31,904-lookup scan of all values (serialized) runs in 0.38 s with `fromJSON` vs 0.89 / 2.49 s with nkv / nkvs.
+
+**Verdict from the numbers:**
+
+- **nkv (single file)** beats `fromJSON` at every measured point on 50k+ entry tables, on the data work: 9.4× at 50k, 7.6× (n = 1) / 6.7× (n = 200) on 200k, 8–12× versions, 11–18× history; at 1k the two are at parity (work 1.1 vs 0.1 ms — startup-bound).
+- **Sharded nkv** adds the low-query regime: ~34 ms total per cold lookup on 200k keys (work 1.2 ms, ≈146× the data work of `fromJSON`), ahead of single-file up to ~100–200 lookups on the multiverse tables and across the whole measured range on the 13.7 MB table.
+- **`fromJSON`** remains the right tool when one evaluation touches a large fraction of the table.
+
+## Trade-offs and known limitations
+
+- **`builtins.fromJSON` still wins for bulk scans** — if an evaluation touches most of the table, parsing once and indexing the attrset beats per-lookup file slicing (measured: 31,904-lookup scan 0.38 s vs 0.89 / 2.49 s). The crossover is beyond 200 lookups/eval on the parent tables and at ~100–200 for sharded vs single-file on the multiverse tables; at ~1k entries all approaches tie at ~34 ms total, of which ~0–1 ms is data work — the rest is Nix itself loading. nkv targets the common case: one or a few lookups per eval.
+- **Per-lookup cost in-process is small** — a few `substring`s + static-table lookups per probe step; the key is read and byte-compared at every occupied walk step, the cost of having no fingerprint to pre-filter slots (and why a wrong value is impossible by construction).
+- **File size ≈ 0.98× the JSON** (200k keys) — the EW-byte index is ~9.6% of the medium/large files (14.5% of small; 1.03× ratio at 1k, where the 14-byte header + 10,240-byte index dominate); in exchange a single-lookup cold eval reads and decodes only a few hundred bytes of the 13.7 MB file. Per-table minimum widths still pay off on small shards (shard-local `koffW` stays 2 digits; empty shards, M = 16, get the minimum widths).
+- **One `sha256` per lookup, used twice** — 8 hex chars `[56:64)` seed the probe, and (in sharded builds) 1–3 hex chars `[24:24+d)` name the shard; the cost is one hash per lookup, not per entry, though sha256 is ~3× slower than the unstable alternatives.
+- **Static only** — the table is precomputed and immutable at build time: adding keys requires re-running the builder (< 2 s for 200k keys; sharded rebuilds parallelize per shard), and there is no in-eval insertion.
+- **Memory** — the index is never parsed into a Nix data structure; each lookup allocates a constant number of small heap strings (probe-seed, key/value fragments). The file string itself is materialised per import: the sharded variant reads one ~11–50 KB shard per lookup (all 256, ≈ the whole file, for `db.count`), the single-file variant reads the whole table.
+- **The decode table must exist where `nkv.nix` sits** — it is imported by path relative to `nkv.nix`; if you copy the module elsewhere, regenerate/copy `nkv-table.nix` alongside it (`build_nkv.py --write-table`). The table is a deterministic function of the format, so there is exactly one correct content.
+- **Nix's string model caps the alphabet at 254** — Nix strings cannot contain NUL, so the numeric fields stop at 254-valued digits (base-255: digits 0–253 in bytes `0x01`–`0xFE`). The index region is not human-diffable (the data region is raw UTF-8); a future Nix with `builtins.parseInt` could shrink the index further, and raw-bytes support would lift the NUL limit.
+- **Probe walk** — up to M empty slots in the worst case (bounded, not O(1)); the expected successful-search chain is ½(1 + 1/(1−α)) slots: 1.5 at the multiverse load 0.49, 2.6 at the 200k table's 0.76, 3 at the 0.8 cap.
 
 ## Repo layout
 
-| path | role |
+| file | role |
 |---|---|
-| `nkv.nix` | nkv lookup module: `db` is a path (or string path) to one `.nkv` file; imports the static decode table once per eval |
-| `nkv.nix` | sharded nkv reader: takes a `--shards` directory + `digits`, reads only the key's hash shard (lazy; `count` reads all shards — offline use) |
-| `nkv-table.nix` | the 255-entry base-255 decode table (static format constant; generated, not hand-edited) |
-| `build_nkv.py` | JSON → nkv builder (single file or `--shards/--prefix`) with independent parser + `--check`; `--write-table` regenerates `nkv-table.nix` |
-| `gen_data.py` | deterministic test-data generator (1k / 50k / 200k keys) |
-| `test_correctness.nix` | `fromJSON`-oracle correctness test (every key + miss + count) |
-| `data/` | `small|medium|large.{json,nkv}` (1k / 50k / 200k keys) + `large_shards/` (256-shard nkv of `large.json`) |
-| `benchmarks/` (`bench.py`, `bench_results.json`, `bench_marginal.py`, `bench_marginal.json`) | 3-method cold-eval benchmark (fromJSON / nkv / nkvs on the 200k table, 7 runs per point) + marginal 1-lookup table + raw results |
-| `REPORT.md` | full design + benchmark + trade-off write-up |
-| `multiverse-faster/` | real-world workload: fkzakaria's nixpkgs-multiverse index (31,904 attrs) converted to nkv, 3-method cold-eval benchmark (single file and 256 shards), oracle, harness, and its own README |
-| `suggestions.md` | nkv improvement ideas and what was rejected, 2026-08-20 |
+| `nkv.nix` | the Nix-side reader — single-file *and* sharded (two call shapes) |
+| `nkv-table.nix` | generated static decode table (255-entry attrset) |
+| `build_nkv.py` | builder + `--check` (single file and shards) |
+| `gen_data.py` | test-data generator (1k / 50k / 200k) |
+| `test_correctness.nix` | Nix-side oracle: `get` vs `builtins.fromJSON` |
+| `data/` | small / medium / large `.json` + `.nkv` + `large_shards/` (256) |
+| `benchmarks/` | `bench.py`, `bench_marginal.py`, `bench_results.json`, `bench_marginal.json` |
+| `multiverse-faster/` | the nixpkgs-multiverse workload: its own README, bench + correctness files |
+| `suggestions.md` | open improvement ideas, tiered (see the header inside for status) |
 
-## Known limitations
+## Reproducing
 
-- **`builtins.fromJSON` still wins for bulk scans** — if an evaluation touches most of the table, parsing once and indexing the attrset beats per-lookup file slicing (measured: 31,904-lookup scan 0.38 s vs 0.89 / 2.49 s). nkv targets the common case: one or a few lookups per eval.
-- **Nix's string model caps the alphabet at 254** — Nix strings cannot contain NUL, so the numeric fields stop at 254-valued digits (base-255: digits 0–253 in bytes `0x01`–`0xFE`). The index region is not human-diffable (the data region is raw UTF-8); a future Nix with `builtins.parseInt` could shrink the index further, and raw-bytes support would lift the NUL limit.
-- **The decode table must exist where `nkv.nix` sits** — it is imported by path relative to `nkv.nix`; if you copy the module elsewhere, regenerate/copy `nkv-table.nix` alongside it (`build_nkv.py --write-table`). The table is a deterministic function of the format, so there is exactly one correct content.
-- **sha256 is the only stable hash available** — `hashString`'s other modes are not stable across Nix versions/platforms in the same documented way; sha256 is ~3× slower than the alternatives but the cost is one hash per lookup, not per entry.
-- **A probe walk of up to M empty slots in the worst case** — bounded but not O(1); the expected successful-search chain is ½(1 + 1/(1−α)) slots: 3 at the 0.8 load cap, 2.6 at the 200k table (load 0.76), 1.5 at the multiverse tables (load 0.49). Every occupied slot in the walk is key-compared, so the extra reads never produce a wrong value.
-- **Fixed table size** — the table is sized for the input at build time; growing it requires a rebuild (cheap: < 2 s for 200k keys; sharded rebuilds are parallelizable per shard).
-- **File size ≈ 0.98× the JSON** (200k keys) — the EW-byte index is ~10% of the file; in exchange a single-lookup cold eval reads and decodes only a few hundred bytes of the 13.7 MB file.
+The Correctness section's loop rebuilds everything from the generated JSON (`gen_data.py` → `build_nkv.py --write-table nkv-table.nix` → per-dataset build + `--check` + oracle). Benchmarks:
+
+    python3 benchmarks/bench.py 7        # 3-method cold bench, 7 runs -> benchmarks/bench_results.json
+
+The multiverse workload (convert → build → oracle → bench) rebuilds per `multiverse-faster/README.md`.
