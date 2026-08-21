@@ -40,7 +40,10 @@ lengths < 254^3; M and file offsets < 254^4. No key or value may
 contain a NUL byte.
 
 JSON input: an object; duplicate keys keep the last (dict semantics,
-matching fromJSON).
+matching fromJSON). Keys must be strings; values are arbitrary JSON:
+string values are stored raw (kv3.nix get/getOr return them as-is),
+non-string values are stored as compact JSON documents, so
+kv3.nix getJson/getOrJson decode them back with builtins.fromJSON.
 """
 import argparse
 import hashlib
@@ -93,8 +96,19 @@ def fp_of(kb):
     return int(h[:6], 16) + 1, int(h[56:64], 16)
 
 
+def norm_value(v):
+    """Value -> stored bytes: strings raw; anything else compact JSON.
+
+    ensure_ascii (the default) keeps the encoding pure ASCII — no NUL,
+    no high bytes — so it is always file-safe; builtins.fromJSON
+    round-trips it exactly.
+    """
+    if isinstance(v, str):
+        return v.encode("utf-8")
+    return json.dumps(v, separators=(",", ":")).encode("ascii")
+
 def build(pairs):
-    """pairs: iterable of (key, value) str pairs. Returns file bytes."""
+    """pairs: iterable of (str key, JSON value) pairs. Returns file bytes."""
     items = list(pairs)
     n = len(items)
     m = next_pow2(max(16, -(-5 * n // 4)))   # ceil(1.25 n), load <= 0.8
@@ -105,7 +119,7 @@ def build(pairs):
     kb_list = []
     vb_list = []
     for k, v in items:
-        kb, vb = k.encode("utf-8"), v.encode("utf-8")
+        kb, vb = k.encode("utf-8"), norm_value(v)
         if 0 in kb or 0 in vb:
             raise ValueError("key or value contains NUL")
         kb_list.append(kb)
@@ -249,9 +263,9 @@ def main():
         pairs = json.load(f)
     if not isinstance(pairs, dict):
         sys.exit("input must be a JSON object")
-    for k, v in pairs.items():
-        if not isinstance(k, str) or not isinstance(v, str):
-            sys.exit(f"non-string key/value: {k!r}: {v!r}")
+    for k in pairs:
+        if not isinstance(k, str):
+            sys.exit(f"non-string key: {k!r}")
 
     data = build(list(pairs.items()))
     with open(args.output, "wb") as f:
@@ -271,12 +285,13 @@ def main():
         bad = 0
         blob = open(args.output, "rb").read()
         for k, v in pairs.items():
+            want = norm_value(v).decode("utf-8")
             got = python_get_data(blob, k)
-            if got != v:
+            if got != want:
                 bad += 1
                 if bad <= 5:
                     print(
-                        f"MISMATCH {k!r}: want {v!r} got {got!r}",
+                        f"MISMATCH {k!r}: want {want!r} got {got!r}",
                         file=sys.stderr,
                     )
         miss = "\x01\x02__definitely_missing__"

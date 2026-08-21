@@ -212,6 +212,7 @@ Invariants:
 - `M = next_pow2(max(16, ⌈1.25·N⌉))` → load ≤ 0.8 (fixed; no factor flag).
 - b254 width limits (builder-enforced): N / `keyTotal` / `valTotal` / key length / value length < 254³ (~16.4 MB); `M` and offsets < 254⁴ (~4.16 GB); no NUL.
 - Sizes (200k keys): 16,273,835 bytes = 1.17× the JSON (vs 18.1 MB / 1.30× for NFK v2, 15.1 MB / 1.09× for NKB v2).
+- Values are opaque: any UTF-8 minus NUL may be stored. When a value holds a JSON document, `getJson`/`getOrJson` decode it with `builtins.fromJSON` at lookup time — the file format is unchanged (byte-identical to str mode).
 
 ## Lookup algorithm (NKB)
 
@@ -269,12 +270,13 @@ let db = (import ./kv2.nix) ./data/large.nfd2;
 in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
 ```
 
-NFK v3 (`kv3.nix`) has the same API and asserts the `NFK3` magic:
+NFK v3 (`kv3.nix`) has the same API — plus `getJson`/`getOrJson` for JSON values — and asserts the `NFK3` magic:
 
 ```nix
 let db = (import ./kv3.nix) ./data/large.nfd3;
 in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
 ```
+Values are opaque; when a value holds a JSON document, `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string (a miss still returns `null`).
 
 NKB (`kv_bin.nix`) has the same API (minus `tableSize`, which is the hash-table size and does not apply to a sorted index):
 
@@ -337,7 +339,7 @@ The NFK v3 builder:
 python3 build_db3.py INPUT.json OUTPUT.nfd3 [--check]
 ```
 
-- Same input contract; `M = next_pow2(max(16, ⌈1.25·N⌉))` (load ≤ 0.8, fixed).
+- Input: a JSON object with string keys and **arbitrary JSON values** — string values are stored raw; non-string values are stored as compact JSON documents, which `getJson`/`getOrJson` decode (all other builders require string values).
 - `--check`: independent re-parse (validates magic, reserved header spaces, the embedded 255-byte table, absence of NUL, and the exact file size) + probe of every key plus a known miss.
 - Width guards: N/total/length < 254³ bytes, M/offsets < 254⁴, no NUL.
 

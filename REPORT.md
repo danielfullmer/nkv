@@ -442,7 +442,12 @@ in {
 ```
 NKB v2 (`kv_bin2.nix`, `*.nkb2` files) exposes the identical API.
 NFK v3 (`kv3.nix`, `*.nfd3` files) has the same API as v1/v2 (including
-`tableSize`) and asserts the `NFK3` magic.
+`tableSize`), plus `getJson`/`getOrJson` — values that hold a JSON document
+come back parsed via `builtins.fromJSON` (a miss is still null) — and asserts
+the `NFK3` magic. The builder (`build_db3.py`) accepts arbitrary JSON
+values: non-string values are stored as compact JSON documents and come
+back parsed via `getJson`/`getOrJson`; string values are stored raw (all
+other builders require string values).
 
 ```sh
 python3 build_db.py      input.json out.nfd  --check   # NFK v1

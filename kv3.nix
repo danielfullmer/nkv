@@ -26,6 +26,8 @@
 # Slot s0 = int(h[56:64], 16) AND (M-1); linear probe, wrap with bitAnd.
 # A fingerprint hit is confirmed by byte-for-byte key comparison, so a
 # fingerprint collision can only add a key read, never a wrong value.
+# Values are opaque bytes; when a value holds a JSON document,
+# getJson/getOrJson return builtins.fromJSON of it (a miss is null).
 #
 # See README.md and REPORT.md for the format and benchmarks.
 
@@ -113,6 +115,17 @@ db:
   in
   {
     get = get;
+
+    # JSON mode: values are opaque; when a value holds a JSON document,
+    # getJson/getOrJson return builtins.fromJSON of the stored string
+    # (a miss is still null).
+    getJson = key:
+      let v = get key;
+      in if v == null then null else builtins.fromJSON v;
+
+    getOrJson = key: default:
+      let v = get key;
+      in if v == null then default else builtins.fromJSON v;
     getOr = key: default:
       let v = get key;
       in if v == null then default else v;
