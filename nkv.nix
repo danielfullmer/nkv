@@ -15,13 +15,12 @@
 # NUL (the one byte Nix's readFile rejects). Field bytes are decoded
 # via the static decode table `nkv-table.nix` (255-entry attrset, byte
 # 1-char string -> digit). The table is a format constant shared by
-# every nkv file — it is NOT carried in the database — and is
-# imported once per eval (Nix import cache), so it costs nothing per
-# lookup. Generate it with
-# `python3 build_nkv.py --write-table nkv-table.nix`.
+# every nkv file — it is NOT carried in the database, and there is no
+# generator — and is imported once per eval (Nix import cache), so it
+# costs nothing per lookup.
 #
 # Layout (chars == bytes):
-#   0..3    magic "NKV3"
+#   0..3    magic "NKV4"
 #   4..6    N         3 base-255 bytes
 #   7..10   M         4 base-255 bytes
 #   11..13  entry field widths in bytes (base-255 digits):
@@ -61,7 +60,7 @@
 let
   H = 14;    # header width
   T0 = H;    # index region start
-  B = 254;   # base-255 positional base (digit 0..253 -> byte 1..254)
+  B = 255;   # base-255 positional base (digit 0..254 -> byte 1..255)
 
   # hex char -> value; sha256 digests are lowercase hex, ASCII only
   HEX = {
@@ -79,13 +78,13 @@ let
     # Static decode table (format constant): byte 1-char string -> digit.
     table = import ./nkv-table.nix;
 
-    # 1 byte at absolute position p -> int value (0..253)
+    # 1 byte at absolute position p -> int value (0..254)
     byte = p: table."${builtins.substring p 1 raw}";
 
-    # 3 bytes -> value < 254^3 (lengths, counts)
+    # 3 bytes -> value < 255^3 (lengths, counts)
     dec3 = p: (byte p * B + byte (p + 1)) * B + byte (p + 2);
 
-    # 4 bytes -> value < 254^4 (offsets, table size)
+    # 4 bytes -> value < 255^4 (offsets, table size)
     dec4 = p: ((byte p * B + byte (p + 1)) * B + byte (p + 2)) * B + byte (p + 3);
 
     # hex string -> int (no builtins.parseInt; one HEX lookup per char)
@@ -151,7 +150,7 @@ let
       in
         probe key s0 0;
   in
-  assert (builtins.substring 0 4 raw) == "NKV3";
+  assert (builtins.substring 0 4 raw) == "NKV4";
   assert koffW >= 1 && koffW <= 4
     && klenW >= 1 && klenW <= 3 && vlenW >= 1 && vlenW <= 3;
   let
