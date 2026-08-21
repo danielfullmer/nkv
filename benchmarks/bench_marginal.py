@@ -20,8 +20,9 @@ import subprocess
 import sys
 import time
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(BASE, "bench_marginal.json")
+HERE = os.path.dirname(os.path.abspath(__file__))   # benchmarks/
+ROOT = os.path.dirname(HERE)                        # repo root
+OUT = os.path.join(HERE, "bench_marginal.json")
 SETS = [("small", "data/small.json", "data/small.nkv"),
         ("medium", "data/medium.json", "data/medium.nkv")]
 
@@ -42,8 +43,8 @@ def main():
     print(f"floor: min={min(floor):.1f} med={statistics.median(floor):.1f}")
     out = {}
     for name, jrel, trel in SETS:
-        jpath = os.path.join(BASE, jrel)
-        tpath = os.path.join(BASE, trel)
+        jpath = os.path.join(ROOT, jrel)
+        tpath = os.path.join(ROOT, trel)
         with open(jpath, encoding="utf-8") as f:
             key = sorted(json.load(f))[0]
         q = json.dumps([key])
@@ -54,7 +55,7 @@ def main():
                          % (json.dumps(jpath), q)),
             "nkv": ("let db = import %s %s; qs = %s; "
                     "in builtins.toJSON (builtins.map (a: db.get a) qs)"
-                    % (json.dumps(os.path.join(BASE, "nkv.nix")),
+                    % (json.dumps(os.path.join(ROOT, "nkv.nix")),
                        json.dumps(tpath), q)),
         }
         row = {"key": key}

@@ -18,7 +18,7 @@
 # every nkv file — it is NOT carried in the database — and is
 # imported once per eval (Nix import cache), so it costs nothing per
 # lookup. Generate it with
-# `python3 build_db3.py --write-table nkv-table.nix`.
+# `python3 build_nkv.py --write-table nkv-table.nix`.
 #
 # Layout (chars == bytes):
 #   0..3    magic "NKV3"
@@ -27,7 +27,8 @@
 #   11..13  entry field widths in bytes (base-255 digits):
 #           keyOffW 1-4 | keyLenW 1-3 | valLenW 1-3;
 #           entry width EW = keyOffW + keyLenW + valLenW (3-10)
-#   14..    M entries of EW bytes: keyOff | keyLen | valLen at entry
+#   14..    index region: M entries of EW bytes:
+#           keyOff | keyLen | valLen at entry
 #           offsets 0, keyOffW, keyOffW+keyLenW
 #           (unused slot: EW bytes of 0x01; keyOff = 0 marks an unused
 #           slot — a real keyOff is always >= 14 + EW*M)
@@ -44,7 +45,7 @@
 # Values are opaque bytes; when a value holds a JSON document,
 # getJson/getOrJson return builtins.fromJSON of it (a miss is null).
 #
-# Sharded mode (build_db3.py --shards): a directory of nkv files, one
+# Sharded mode (build_nkv.py --shards): a directory of nkv files, one
 # per shard slice of the key hash: <dir>/<h[24:24+d]>.nkv where
 # h = sha256(key) in lowercase hex and d = digits (1 | 2 | 3 -> 16 |
 # 256 | 4096 shards; must match --shards). The slice is disjoint from

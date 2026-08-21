@@ -1,15 +1,14 @@
-# test_correctness3.nix — verify nkv.nix (nkv, dense hash + binary
+# test_correctness.nix — verify nkv.nix (nkv, dense hash + binary
 # index) lookups match fromJSON.
-# fromJSON is used HERE (test harness only), never in the implementation.
-# Invoke:  nix eval --impure --expr '(import ./test_correctness3.nix) "small"'
+# Invoke:  nix eval --impure --expr '(import ./test_correctness.nix) "small"'
 size:
 let
-  db    = (import ./nkv.nix) (./data/${size}.nkv);
-  j     = builtins.fromJSON (builtins.readFile (./data/${size}.json));
-  names = builtins.attrNames j;
-  n     = builtins.length names;
+  db = (import ./nkv.nix) (./data/${size}.nkv);
+  jsonData = builtins.fromJSON (builtins.readFile (./data/${size}.json));
+  names = builtins.attrNames jsonData;
+  n = builtins.length names;
 
-  mismatches = builtins.filter (k: (db.get k) != j."${k}") names;
+  mismatches = builtins.filter (k: (db.get k) != jsonData."${k}") names;
   missNullOk = db.get "___definitely_not_present___" == null;
   presentKey = builtins.head names;
   hasPresent = db.has presentKey;          # true  == correct

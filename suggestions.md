@@ -8,18 +8,18 @@ rejected* into the implemented design, and the fp-era 15-byte slot
 (fp `dec4` + keyOff `dec4` + keyLen `dec3` + valLen `dec3` + pad) no longer
 exists (EW = koffW + klenW + vlenW = 5–6 shipped single files, 4–5
 shards). All measured numbers below predate the fingerprint removal;
-current results are in `bench_results.json` /
+current results are in `benchmarks/bench_results.json` /
 `multiverse-faster/bench_results.json`.
 
 2026-08-20. Grounded in the current code (`nkv.nix`, `nkv.nix`,
-`nkv-table.nix`, `build_db3.py`) and the measured 3-method benchmarks
+`nkv-table.nix`, `build_nkv.py`) and the measured 3-method benchmarks
 (fromJSON / nkv / nkvs; parent 200k `large` dataset and the
 `multiverse-faster/` 31,904-attr workload, Nix 2.34.7). Nothing here is a
 correctness fix — nkv is sound; these are performance and robustness.
 
 **Status (updated 2026-08-20):**
 
-- **Tier 1 (sharding)** — implemented: `build_db3.py --shards/--prefix` +
+- **Tier 1 (sharding)** — implemented: `build_nkv.py --shards/--prefix` +
   `nkv.nix`; measured results at the end of the Tier 1 section.
 - **Static decode table** — implemented: the 255-byte base-255 table moved out
   of every `.nkv` into a single generated `nkv-table.nix` (imported once
@@ -67,13 +67,13 @@ lookup — Tier 2/3 attack this).
   narrows — that regime belongs to single-file (or `fromJSON` at bulk scan),
   matching the measured crossover below.
 
-Cost: 256 files, a `build_db3.py --shards 256 --prefix dir/` mode (route
+Cost: 256 files, a `build_nkv.py --shards 256 --prefix dir/` mode (route
 each key by its own digest slice), and a thin `nkv.nix` wrapper that picks
 the shard and delegates to `nkv.nix`. You lose the single-file property —
 that is the trade. (This is the same gap the fkzakaria article's wasm
 section fights: Nix has no partial-read builtin.)
 
-**Implemented** (2026-08-20): `build_db3.py --shards {16,256,4096} --prefix
+**Implemented** (2026-08-20): `build_nkv.py --shards {16,256,4096} --prefix
 DIR/` writes `DIR/<h[24:24+d]>.nkv` for every shard (empty shard = valid
 nkv file, N = 0, M = 16); `nkv.nix` selects the shard by
 `sha256(key) hex [24:24+d]` and delegates to `nkv.nix` (same API; lazy — no
@@ -163,7 +163,7 @@ re-bench to confirm.
 
 ## Cheap hardening (no format change)
 
-- **`build_db3.py --check`**: also verify each stored fp against
+- **`build_nkv.py --check`**: also verify each stored fp against
   `hashlib.sha256(key)` (today the probe re-validates keys and values, not
   the fp field); `sys.exit` on duplicate keys in `build()` (a dict input
   dedups silently; an explicit pair list would insert twice and the lookup
@@ -202,7 +202,7 @@ Any of these landing re-opens the corresponding suggestion above:
 For a lock file that re-pins the same ~30 attrs, build a **micro-table of
 exactly those 30 keys** (M = 64, ~10 KB): the whole lock answers in ~35 ms
 vs ~157–160 ms for `fromJSON` on the 4.8 MB `versions_flat.json` (measured,
-`multiverse-faster/`). `build_db3.py` already accepts arbitrary JSON input —
+`multiverse-faster/`). `build_nkv.py` already accepts arbitrary JSON input —
 
 ## Priority (updated 2026-08-20)
 
@@ -210,7 +210,7 @@ vs ~157–160 ms for `fromJSON` on the 4.8 MB `versions_flat.json` (measured,
    correctness story; pays on every lookup of every table.
 2. **Tier 3** — rides along with Tier 2 (same hex-decoding site).
 3. Hardening items — do whenever the builder is touched.
-4. ~~Tier 1 (sharding)~~ — **implemented**: `build_db3.py --shards` +
+4. ~~Tier 1 (sharding)~~ — **implemented**: `build_nkv.py --shards` +
    `nkv.nix`. Use for lock-file-style workloads (crossover ~30–100
    lookups/eval on versions, ~100–200 on history); on the 16 MB table
    sharded wins across the measured range.

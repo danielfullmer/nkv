@@ -13,7 +13,7 @@ Workload: one cold `nix eval --impure --raw` process answers N queries
 sorted keys (all present; every method must return the same values).
 
 The sharded dataset is data/large_shards/ (build:
-  python3 build_db3.py data/large.json --shards 256 --prefix data/large_shards/ --check)
+  python3 build_nkv.py data/large.json --shards 256 --prefix data/large_shards/ --check)
 Time split: the fixed Nix load floor is measured as an empty eval
 (`nix eval --impure --raw --expr '""'`, same flags, no expression
 work); per method, work = total - baseline, paired by run index.
@@ -29,11 +29,12 @@ import subprocess
 import sys
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-NKV = os.path.join(HERE, "nkv.nix")
-JSON = os.environ.get("NKV_JSON", os.path.join(HERE, "data/large.json"))
-TABLE = os.environ.get("NKV_TABLE", os.path.join(HERE, "data/large.nkv"))
-SHARDS = os.environ.get("NKV_SHARDS", os.path.join(HERE, "data/large_shards"))
+HERE = os.path.dirname(os.path.abspath(__file__))   # benchmarks/
+ROOT = os.path.dirname(HERE)                        # repo root
+NKV = os.path.join(ROOT, "nkv.nix")
+JSON = os.environ.get("NKV_JSON", os.path.join(ROOT, "data/large.json"))
+TABLE = os.environ.get("NKV_TABLE", os.path.join(ROOT, "data/large.nkv"))
+SHARDS = os.environ.get("NKV_SHARDS", os.path.join(ROOT, "data/large_shards"))
 OUT = os.environ.get("NKV_OUT", os.path.join(HERE, "bench_results.json"))
 NQS = 200
 NS = [0, 1, 5, 10, 30, 100, 200]

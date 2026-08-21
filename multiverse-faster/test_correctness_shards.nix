@@ -3,7 +3,7 @@
 #   nix eval --impure --json --expr "(import ./test_correctness_shards.nix)
 #     { dir = /path/to/versions_shards; jsonPath = /path/to/index/versions.json; }"
 #
-# `table` is a directory built with `build_db3.py --shards 256 --prefix`.
+# `table` is a directory built with `build_nkv.py --shards 256 --prefix`.
 # Prints { total, mismatches, firstBad, missNull, count }. `count` is the
 # expensive sharded path: it imports (reads) all 256 shard files and must
 # equal the oracle key total.

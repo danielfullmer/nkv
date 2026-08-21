@@ -2,7 +2,7 @@
 
 Replicates the workload of ["Three ways to smuggle SQLite into Nix"](https://fzakaria.com/2026-08-19/three-ways-to-smuggle-sqlite-into-nix)
 (fzakaria, 2026-08-19) using the nkv tables from the parent project
-(`../nkv.nix`, `../build_db3.py`) instead of the article's
+(`../nkv.nix`, `../build_nkv.py`) instead of the article's
 `builtins.fromJSON` approach. Compared: `fromJSON`, single-file nkv, and
 256-shard sharded nkv (`nkv.nix`); the article's `builtins.exec` /
 `importNative` / `wasm-sqlite` alternatives are out of scope.
@@ -45,15 +45,15 @@ nkv value = the inner map, stored as a compact JSON document,
 ```sh
 python3 convert.py index/versions.json versions_flat.json
 python3 convert.py index/history.json history_flat.json
-python3 ../build_db3.py versions_flat.json versions.nkv --check
-python3 ../build_db3.py history_flat.json history.nkv --check
-python3 ../build_db3.py versions_flat.json --shards 256 --prefix versions_shards/ --check
-python3 ../build_db3.py history_flat.json --shards 256 --prefix history_shards/ --check
+python3 ../build_nkv.py versions_flat.json versions.nkv --check
+python3 ../build_nkv.py history_flat.json history.nkv --check
+python3 ../build_nkv.py versions_flat.json --shards 256 --prefix versions_shards/ --check
+python3 ../build_nkv.py history_flat.json --shards 256 --prefix history_shards/ --check
 ```
 
 ## Correctness
 
-- `build_db3.py --check` (independent Python re-parse of the `.nkv`
+- `build_nkv.py --check` (independent Python re-parse of the `.nkv`
   bytes): **31,904/31,904 ok** for both tables, miss → `null`.
 - Nix-side oracle, one cold `nix eval` per file comparing every attribute
   `db.getJson k == (fromJSON index).attrs.${k}`:
