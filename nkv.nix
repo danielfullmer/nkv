@@ -8,8 +8,8 @@
 #   import ./nkv.nix { digits = 2; dir = ...; }    # a --shards directory
 #
 # Open addressing: one sha256-derived probe seed + linear probing over
-# a power-of-two table at load <= 0.8. No fingerprints (removed in
-# rev 6): every occupied slot is read and confirmed by a byte-for-byte
+# a power-of-two table at load <= 0.8. No fingerprints: every
+# occupied slot is read and confirmed by a byte-for-byte
 # key comparison. Each numeric field is 1-4 base-255 bytes (one byte
 # per digit, byte = digit + 1, big-endian) so the file never contains
 # NUL (the one byte Nix's readFile rejects). Field bytes are decoded
@@ -24,16 +24,13 @@
 #   0..3    magic "NKV3"
 #   4..6    N         3 base-255 bytes
 #   7..10   M         4 base-255 bytes
-#   11      format revision byte: '6'
-#   12      reserved: always 0x01 (base-255 digit 0) — the former fpW;
-#           asserted 0 at import
-#   13..15  entry field widths in bytes (base-255 digits):
+#   11..13  entry field widths in bytes (base-255 digits):
 #           keyOffW 1-4 | keyLenW 1-3 | valLenW 1-3;
 #           entry width EW = keyOffW + keyLenW + valLenW (3-10)
-#   16..    M entries of EW bytes: keyOff | keyLen | valLen at entry
+#   14..    M entries of EW bytes: keyOff | keyLen | valLen at entry
 #           offsets 0, keyOffW, keyOffW+keyLenW
 #           (unused slot: EW bytes of 0x01; keyOff = 0 marks an unused
-#           slot — a real keyOff is always >= 16 + EW*M)
+#           slot — a real keyOff is always >= 14 + EW*M)
 #   then    data region: for each key in insertion order, the key's
 #           bytes followed immediately by the value's bytes; keyOff
 #           is absolute from the file start, the value offset is
@@ -61,7 +58,7 @@
 # See README.md and REPORT.md for the format and benchmarks.
 
 let
-  H = 16;    # header width
+  H = 14;    # header width
   T0 = H;    # index region start
   B = 254;   # base-255 positional base (digit 0..253 -> byte 1..254)
 
@@ -102,14 +99,11 @@ let
     m = dec4 7;
 
     # Entry field widths, stored once per file in the header at
-    # offsets 13..15; each is a base-255 digit == width in bytes
+    # offsets 11..13; each is a base-255 digit == width in bytes
     # (byte = digit + 1), so `byte` returns the width directly.
-    # Offset 12 is reserved (always base-255 digit 0 — the former fpW;
-    # fingerprints removed in rev 6) and asserted 0 below.
-    reserved = byte 12;
-    koffW = byte 13;
-    klenW = byte 14;
-    vlenW = byte 15;
+    koffW = byte 11;
+    klenW = byte 12;
+    vlenW = byte 13;
 
     # Width-selecting decoder: one specialized thunk per width (1-4
     # base-255 bytes), chosen once at import so the probe hot path stays
@@ -157,8 +151,7 @@ let
         probe key s0 0;
   in
   assert (builtins.substring 0 4 raw) == "NKV3";
-  assert (builtins.substring 11 1 raw) == "6";
-  assert reserved == 0 && koffW >= 1 && koffW <= 4
+  assert koffW >= 1 && koffW <= 4
     && klenW >= 1 && klenW <= 3 && vlenW >= 1 && vlenW <= 3;
   let
   in

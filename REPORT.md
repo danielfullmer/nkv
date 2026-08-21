@@ -27,7 +27,7 @@ table drops from ~210 ms (`fromJSON`) to **~34 ms (sharded) / ~57 ms
 | Cold single lookup, 200k keys | ~34 ms sharded (work 1.2) / ~57 ms single-file nkv (work 22.9) vs ~210 ms `builtins.fromJSON` (work 174.7) — ≈146× / 7.6× on the data work |
 | Cold single lookup, 50k keys | 39.7 ms (work 4.9) vs 80.2 ms (work 45.9), 9.4× on work; 1k keys: 34.3 vs 34.9 ms, work 1.1 / 0.1 ms (parity, startup-bound) |
 | nixpkgs-multiverse, 31,904 attrs | 8–18× (single file) and 7–149× (256 shards; low query counts; at N = 1 the history sharded work rounds to 0.0) across N = 1–200, on the data work |
-| file size | 200k keys: 13,652,092 B = 0.98× the 13.9 MB JSON (3,390,934 B = 0.98× at 50k; 70,750 B = 1.03× at 1k) |
+| file size | 200k keys: 13,652,090 B = 0.98× the 13.9 MB JSON (3,390,932 B = 0.98× at 50k; 70,748 B = 1.03× at 1k) |
 | Nix load floor | Measured as a cold empty eval (`nix eval --impure --raw --expr '""'`, no expression work): 33.0 ms median (parent, 23.2–38.7) / 32.4 ms (multiverse, 23.5–34.7); nkv work on top: ~0–23 ms sharded / ~10–32 ms single-file; `fromJSON` parse work ~123–228 ms |
 
 ## Why not `builtins.fromJSON`?
@@ -37,7 +37,7 @@ but the 13.9 MB file is parsed on **every evaluation, for any number of
 lookups**: ~207–214 ms wall per eval on the 200k-key table — ~173–181 ms of
 work on top of the ~33 ms Nix load floor — flat from 1 to 200 lookups
 (the parse is the whole work term). nkv
-reads only the 16-byte header, one EW-byte (5–6 byte) index entry per probe
+reads only the 14-byte header, one EW-byte (5–6 byte) index entry per probe
 step, and
 the one key/value pair needed. The lookup result is identical; the
 correctness oracle (`test_correctness3.nix`) checks every key against
@@ -54,23 +54,21 @@ chosen at build time and stored in the header — so every file byte is
 rejects.
 
 ```
-     offset 0              header, 16 bytes
-     offset 16             index region, M × EW bytes (EW = 3–10; 5–6 in the shipped single-file builds)
-     offset 16 + M·EW      data region (interleaved, variable)
+     offset 0              header, 14 bytes
+     offset 14             index region, M × EW bytes (EW = 3–10; 5–6 in the shipped single-file builds)
+     offset 14 + M·EW      data region (interleaved, variable)
 ```
 
-**Header (16 bytes):**
+**Header (14 bytes):**
 
 | field | offset | width | meaning |
 |---|---:|---:|---|
 | magic | 0 | 4 | `NKV3` |
 | `N` | 4 | 3 | entry count (base-255) |
 | `M` | 7 | 4 | table size, power of two (base-255) |
-| revision | 11 | 1 | `6` (0x36) — no data-region totals |
-| reserved | 12 | 1 | `0x01` (base-255 digit 0) — the rev-5 `fpW` width byte, kept as a reserved slot |
-| `koffW` `klenW` `vlenW` | 13–15 | 3 | per-field base-255 widths — each the smallest that fits the table's max: 1–4 / 1–3 / 1–3 |
+| `koffW` `klenW` `vlenW` | 11–13 | 3 | per-field base-255 widths — each the smallest that fits the table's max: 1–4 / 1–3 / 1–3 |
 
-**Index region** — one EW-byte entry per table slot `s` at offset `16 + EW·s`:
+**Index region** — one EW-byte entry per table slot `s` at offset `14 + EW·s`:
 
 | field | offset | width | meaning |
 |---|---:|---:|---|
@@ -79,7 +77,7 @@ rejects.
 | `valLen` | `koffW`+`klenW` | 1–3 | value length (value is at `keyOff + keyLen`) |
 
 An unused slot is EW bytes of `0x01` (all fields zero); a miss is a
-decoded `keyOff` of 0 (a real key offset is always ≥ `16 + EW·M`). Every
+decoded `keyOff` of 0 (a real key offset is always ≥ `14 + EW·M`). Every
 occupied slot is read and byte-compared against the key, so a mismatch
 costs one extra key read and a wrong value is impossible by construction.
 The data region interleaves key and value bytes in JSON insertion order,
@@ -113,18 +111,18 @@ can never yield a wrong value.
 
 **Limits** (builder-enforced): `N`, key length, and value length < 254³
 (≈16.4 MB); `M` and file offsets < 254⁴ (≈4.16 GB); no NUL anywhere. The
-independent `--check` parser re-validates the magic, the revision byte, the
-reserved header spaces, and the absence of NUL, and re-probes every key.
+independent `--check` parser re-validates the magic, the field widths, and
+the absence of NUL, and re-probes every key.
 
 Measured sizes (JSON → nkv, with static table):
 
 | dataset | keys | JSON bytes | nkv bytes | index bytes | ratio |
 |---|---:|---:|---:|---:|---:|
-| small | 1,005 | 68,534 | 70,750 | 10,240 | 1.03× |
-| medium | 50,000 | 3,463,238 | 3,390,934 | 327,680 | 0.98× |
-| large | 200,000 | 13,941,356 | 13,652,092 | 1,310,720 | 0.98× |
-| multiverse versions | 31,904 | 4,833,362 | 5,098,977 | 393,216 | 1.06× |
-| multiverse history | 31,904 | 6,876,612 | 7,142,227 | 393,216 | 1.04× |
+| small | 1,005 | 68,534 | 70,748 | 10,240 | 1.03× |
+| medium | 50,000 | 3,463,238 | 3,390,932 | 327,680 | 0.98× |
+| large | 200,000 | 13,941,356 | 13,652,090 | 1,310,720 | 0.98× |
+| multiverse versions | 31,904 | 4,833,362 | 5,098,975 | 393,216 | 1.06× |
+| multiverse history | 31,904 | 6,876,612 | 7,142,225 | 393,216 | 1.04× |
 
 EW-byte entries, no padding (current builds: EW = 5 = `keyOff` 3 + `keyLen`
 1 + `valLen` 1 for the parent tables; EW = 6 = `keyOff` 3 + `keyLen` 1 +
@@ -146,7 +144,7 @@ lookup(key):
   h  = sha256(key) in lowercase hex
   s  = int(h[56:64], 16) AND (M - 1)    # probe-seed slot
   for i in 0..M:                        # bounded walk
-    e    = 16 + EW * ((s + i) AND (M - 1)) # EW from the header (bitAnd wrap)
+    e    = 14 + EW * ((s + i) AND (M - 1)) # EW from the header (bitAnd wrap)
     koff = base-255-decode(entry[e .. e+koffW]) # koffW static-table lookups
     if koff = 0: return null             # unused slot: key absent
     klen = base-255-decode(entry[e+koffW .. e+koffW+klenW])
@@ -224,7 +222,7 @@ in {
 }
 ```
 
-The module asserts the `NKV3` magic, the revision byte, and the field
+The module asserts the `NKV3` magic and the field
 widths at import.
 
 ```sh
@@ -455,13 +453,13 @@ Verdict from the numbers:
    all approaches tie: ~34 ms total each, of which ~0–1 ms is data work —
    the rest is Nix itself loading.
 3. **File size**: 0.98× the JSON at 50k and 200k keys (the index is
-   ~9.6% of the file); 1.03× at 1k keys, where the fixed 16-byte header +
+   ~9.6% of the file); 1.03× at 1k keys, where the fixed 14-byte header +
    10,240-byte index (M = 2,048) are 14.5% of the file. Parameterized
-   field widths (revision 2) dropped the fixed 15-byte rev-1 entries (no
-   padding) and cut the 200k-key file from 16.3 MB to 14.7 MB; moving the
+   field widths dropped the fixed 15-byte entries (no padding) and cut the
+   200k-key file from 16.3 MB to 14.7 MB; moving the
    255-byte decode table out of the files saved 255 B per file (and per
    shard) and made the sharded reader simpler; removing the fingerprint
-   field (revision 6) cut the 200k-key single file from 14,700,668 to
+   field cut the 200k-key single file from 14,700,668 to
    13,652,092 B (−7.1%), the 1k-key table by −10.4%, and the 256-file
    large-shard build from 14,688,364 to 13,492,332 B (−8.1%). Per-table
    minimum widths still pay off on small shards: every shard keeps

@@ -18,18 +18,15 @@ only the needed shard is read per lookup.
 #   0..3     magic "NKV3"
 #   4..6     N         (3 base-255 bytes)
 #   7..10    M         (4 base-255 bytes)
-#   11       format revision byte: '6' (0x36)
-#   12       reserved  (1 base-255 byte: always 0x01 = digit 0 — the former
-#            fpW; fingerprints were removed in rev 6)
-#   13       koffW     (1 base-255 byte: 1..4)
-#   14       klenW     (1 base-255 byte: 1..3)
-#   15       vlenW     (1 base-255 byte: 1..3)
-#   16..     M entries of EW bytes, EW = koffW + klenW + vlenW (3..10),
+#   11       koffW     (1 base-255 byte: 1..4)
+#   12       klenW     (1 base-255 byte: 1..3)
+#   13       vlenW     (1 base-255 byte: 1..3)
+#   14..     M entries of EW bytes, EW = koffW + klenW + vlenW (3..10),
 #            fields at entry offsets:
 #            keyOff @0 (koffW) | keyLen @koffW (klenW)
 #            | valLen @koffW+klenW (vlenW)
 #            (unused slot: EW bytes of 0x01; keyOff = 0 marks an unused
-#            slot — a real keyOff is always >= 16 + EW*M > 0)
+#            slot — a real keyOff is always >= 14 + EW*M > 0)
 #   then     data region: for each key in JSON insertion order, the key's
 #            UTF-8 bytes immediately followed by the value's UTF-8 bytes.
 #            keyOff is absolute from the file start; the value offset is
@@ -45,10 +42,9 @@ only the needed shard is read per lookup.
 Hashing: h = sha256(key) in lowercase hex. Initial slot
 s0 = int(h[56:64], 16)
 AND (M-1); linear probing, first empty slot wins. M = next_pow2(max(16,
-ceil(1.25*n))), so load <= 0.8. There are no fingerprints (removed in
-rev 6): every occupied slot is read and confirmed by a byte-for-byte
-key comparison, and a walk ends at a key match or an unused slot
-(keyOff = 0).
+# There are no fingerprints: every occupied slot is read and confirmed by a
+# byte-for-byte key comparison, and a walk ends at a key match or an unused
+# slot (keyOff = 0).
 
 Field encoding ("base-255"): each byte of a field is one digit plus one
 (digit in 0..253 -> byte in 1..254, big-endian digits), so every byte in
@@ -77,8 +73,7 @@ import os
 import sys
 
 MAGIC = b"NKV3"
-REV = 54                              # format revision byte: '6'
-H = 16
+H = 14
 T0 = H                                # index region start (table is static)
 FO = 4                               # M / keyOff field width (base-255)
 FL = 3                               # N / key|value len field width
@@ -88,7 +83,7 @@ MAX_FIELD4 = B ** FO - 1             # 4,162,314,255
 
 # entry layout: keyOff @0 (koffW) | keyLen @koffW (klenW)
 #   | valLen @koffW+klenW (vlenW)
-#   (no fingerprints since rev 6; keyOff = 0 marks an unused slot)
+#   (keyOff = 0 marks an unused slot)
 #   entry width EW = koffW + klenW + vlenW (3..10), widths in header
 
 
@@ -201,8 +196,7 @@ def build(pairs):
         MAGIC
         + enc(n, FL)
         + enc(m, FO)
-        # byte 12: reserved (former fpW) — always 0x01 = digit 0
-        + bytes([REV, 0x01, koffW + 1, klenW + 1, vlenW + 1])
+        + bytes([koffW + 1, klenW + 1, vlenW + 1])
     )
     assert len(header) == H
 
@@ -227,17 +221,10 @@ def build(pairs):
     return blob
 
 def header_widths(data):
-    """(koffW, klenW, vlenW) from the header, validated. Byte 12 (the
-    former fpW) must be 0x01 = digit 0: fingerprints were removed in
-    rev 6, so a non-zero value marks a legacy fingerprinted file."""
-    if data[12] != 0x01:
-        raise ValueError(
-            f"byte 12 is {data[12]:#04x}, not 0x01: legacy fingerprinted "
-            f"nkv (rev <= 5) file; fingerprints were removed in rev 6"
-        )
-    koffW = data[13] - 1
-    klenW = data[14] - 1
-    vlenW = data[15] - 1
+    """(koffW, klenW, vlenW) from the header, validated."""
+    koffW = data[11] - 1
+    klenW = data[12] - 1
+    vlenW = data[13] - 1
     if not (1 <= koffW <= FO and 1 <= klenW <= FL
             and 1 <= vlenW <= FL):
         raise ValueError(
@@ -256,8 +243,6 @@ def parse(path):
     m = dec(data[7:11], FO)
     if m < n:
         raise ValueError(f"table size {m} < entry count {n}")
-    if data[11] != REV:
-        raise ValueError(f"bad revision byte: {data[11]:#04x}")
     koffW, klenW, vlenW = header_widths(data)
     if 0 in data:
         raise ValueError("file contains NUL (invalid for Nix readFile)")

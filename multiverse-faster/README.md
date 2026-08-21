@@ -34,7 +34,7 @@ nkv value = the inner map, stored as a compact JSON document,
 |---|---|
 | `convert.py` | `index/*.json` → `{ attr: innerMap }` flat JSON |
 | `versions_flat.json`, `history_flat.json` | flattened inputs (generated) |
-| `versions.nkv` (5,098,977 B), `history.nkv` (7,142,227 B) | nkv tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nkv-table.nix`) |
+| `versions.nkv` (5,098,975 B), `history.nkv` (7,142,225 B) | nkv tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nkv-table.nix`) |
 | `test_correctness.nix` | every-attr `getJson` vs `fromJSON` oracle |
 | `bench.py`, `bench_results.json` | cold-eval benchmark harness + results |
 | `versions_shards/`, `history_shards/` | 256 sharded nkv tables each (`<h[24:26]>.nkv`; generated) |

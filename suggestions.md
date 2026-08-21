@@ -1,14 +1,15 @@
 # nkv improvement suggestions
 
-**Superseded (2026-08-21):** revision 6 removed the 24-bit fingerprint field
-from the slot — the probe now byte-compares the key at every occupied slot
+**Superseded (2026-08-21):** the 24-bit fingerprint field was removed from
+the slot — the probe now byte-compares the key at every occupied slot
 (see `REPORT.md`). This makes Tier 2 (v4 hex fp) moot, turns the
 "drop the fingerprint, compare keys directly" row under *Considered and
 rejected* into the implemented design, and the fp-era 15-byte slot
 (fp `dec4` + keyOff `dec4` + keyLen `dec3` + valLen `dec3` + pad) no longer
-exists (rev 6: EW = koffW + klenW + vlenW = 5–6 shipped single files, 4–5
-shards). All measured numbers below predate rev 6; current results are in
-`bench_results.json` / `multiverse-faster/bench_results.json`.
+exists (EW = koffW + klenW + vlenW = 5–6 shipped single files, 4–5
+shards). All measured numbers below predate the fingerprint removal;
+current results are in `bench_results.json` /
+`multiverse-faster/bench_results.json`.
 
 2026-08-20. Grounded in the current code (`nkv.nix`, `nkv.nix`,
 `nkv-table.nix`, `build_db3.py`) and the measured 3-method benchmarks
@@ -141,7 +142,7 @@ of the slot's fingerprint (~18 ops) just to compare fingerprints. Instead:
 Net: **~−18 ops per lookup**; a fingerprint collision still only adds a key
 read, never a wrong value (same correctness argument as today). File cost:
 +6.7% of the index region = +66 KB / +1.2% (multiverse versions), +256 KB /
-+1.6% (large). Requires a format version bump (revision byte 1 → 2) +
++1.6% (large). Requires a new slot layout +
 parser v4; the existing `--check` + fromJSON-oracle harness makes that a
 mechanical verification pass.
 
@@ -168,8 +169,8 @@ re-bench to confirm.
   dedups silently; an explicit pair list would insert twice and the lookup
   would return whichever entry the probe sequence reaches first —
   order-dependent and surprising).
-- **Opt-in integrity checksum**: use 16 of the 46 reserved header bytes
-  (offsets 18–63) for a sha256-of-data-region (ASCII hex) + an opt-in
+- **Opt-in integrity checksum**: extend the header with a 16-byte slot
+  holding a sha256-of-data-region (ASCII hex) + an opt-in
   `assertIntegrity` function. Zero hot-path cost; catches partial writes and
   bit rot.
 - **API**: `getMany` (map `get` over a key list), `keys` (O(M) slot walk —
