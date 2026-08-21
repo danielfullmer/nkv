@@ -3,7 +3,7 @@
 # builtins.hashString and integer math.
 #
 # Open addressing: sha256 fingerprint + linear probing over a power-of-two
-# table at load <= 0.8. Each numeric field is 3-4 "b254" bytes (one byte
+# table at load <= 0.8. Each numeric field is 1-4 "b254" bytes (one byte
 # per digit, byte = digit + 1, big-endian) so the file never contains NUL
 # (the one byte Nix's readFile rejects). Field bytes are decoded via the
 # static decode table `nfd3-table.nix` (255-entry attrset, byte 1-char
@@ -20,9 +20,13 @@
 #   7..10   M         4 b254 bytes
 #   11..13  keyTotal  3 b254 bytes
 #   14..16  valTotal  3 b254 bytes
-#   17      format revision byte: '1'
-#   18..63  reserved (spaces)
-#   64..    M entries of 15 bytes: fp 4 | keyOff 4 | keyLen 3 | valLen 3
+#   17      format revision byte: '2'
+#   18..21  entry field widths in bytes (b254 digits):
+#           fpW 1-4 | keyOffW 1-4 | keyLenW 1-3 | valLenW 1-3;
+#           entry width EW = fpW + keyOffW + keyLenW + valLenW (7-14)
+#   22..63  reserved (spaces)
+#   64..    M entries of EW bytes: fp | keyOff | keyLen | valLen at
+#           entry offsets 0, fpW, fpW+keyOffW, fpW+keyOffW+keyLenW
 #   then    data region: for each key in insertion order, the key's bytes
 #           followed immediately by the value's bytes; keyOff is absolute
 #           from the file start, the value offset is keyOff + keyLen.
@@ -39,7 +43,6 @@
 let
   H = 64;    # header width
   T0 = H;    # index region start
-  W = 15;    # index entry width
   B = 254;   # b254 base (digit 0..253 -> byte 1..254)
 
   # hex char -> value; sha256 digests are lowercase hex, ASCII only
@@ -78,24 +81,52 @@ db:
     keyTotal = dec3 11;
     valTotal = dec3 14;
 
+    # Entry field widths (revision 2), stored once per file in the header
+    # at offsets 18..21; each is a b254 digit == width in bytes
+    # (byte = digit + 1), so `byte` returns the width directly.
+    fpW = byte 18;
+    koffW = byte 19;
+    klenW = byte 20;
+    vlenW = byte 21;
+
+    # Width-selecting decoder: one specialized thunk per width (1-4
+    # b254 bytes), chosen once at import so the probe hot path stays
+    # plain integer math (no genList/fold per field).
+    decW = w:
+      if w == 1 then (p: byte p)
+      else if w == 2 then (p: byte p * B + byte (p + 1))
+      else if w == 3 then (p: (byte p * B + byte (p + 1)) * B + byte (p + 2))
+      else (p: ((byte p * B + byte (p + 1)) * B + byte (p + 2)) * B + byte (p + 3));
+
+    dFP = decW fpW;
+    dKO = decW koffW;
+    dKL = decW klenW;
+    dVL = decW vlenW;
+
+    # Entry geometry, recomputed from the header (not a format constant).
+    EW = fpW + koffW + klenW + vlenW;
+    OKO = fpW;
+    OKL = fpW + koffW;
+    OVL = fpW + koffW + klenW;
+
     # Probe: at most m steps (bounded; an unused slot must exist).
     # Unused slot (fp 0) -> null. Fingerprint hit -> confirm key bytes.
     probe = key: fp: s0: i:
       let
         s = builtins.bitAnd (s0 + i) (m - 1);
-        e = T0 + W * s;
-        efp = dec4 e;
+        e = T0 + EW * s;
+        efp = dFP e;
       in
         if efp == 0 then null
         else if efp != fp then probe key fp s0 (i + 1)
         else
           let
-            koff = dec4 (e + 4);
-            klen = dec3 (e + 8);
+            koff = dKO (e + OKO);
+            klen = dKL (e + OKL);
             k = builtins.substring koff klen raw;
           in
             if k == key
-            then builtins.substring (koff + klen) (dec3 (e + 11)) raw
+            then builtins.substring (koff + klen) (dVL (e + OVL)) raw
             else probe key fp s0 (i + 1);
 
     get = key:
@@ -108,8 +139,10 @@ db:
           0;
   in
   assert (builtins.substring 0 4 raw) == "NFK3";
-  assert (builtins.substring 17 1 raw) == "1";
-  assert (builtins.stringLength raw) == T0 + W * m + keyTotal + valTotal;
+  assert (builtins.substring 17 1 raw) == "2";
+  assert fpW >= 1 && fpW <= 4 && koffW >= 1 && koffW <= 4
+    && klenW >= 1 && klenW <= 3 && vlenW >= 1 && vlenW <= 3;
+  assert (builtins.stringLength raw) == T0 + EW * m + keyTotal + valTotal;
   let
   in
   {

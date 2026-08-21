@@ -14,16 +14,23 @@ Every shard is written (empty shards are valid NFK v3 files with N = 0,
 M = 16), so the Nix wrapper always resolves a key to an existing file;
 only the needed shard is read per lookup.
 
-NFK v3 layout (all offsets absolute, chars == bytes):
+# NFK v3 layout (all offsets absolute, chars == bytes):
 #   0..3     magic "NFK3"
 #   4..6     N         (3 b254 bytes)
 #   7..10    M         (4 b254 bytes)
 #   11..13   keyTotal  (3 b254 bytes)
 #   14..16   valTotal  (3 b254 bytes)
-#   17       format revision byte: '1' (0x31) — no table in file
-#   18..63   spaces (header is 64 bytes)
-#   64..     M entries of 15 bytes: fp 4 | keyOff 4 | keyLen 3 | valLen 3
-#            (unused slot: all fields zero, i.e. 15 bytes 0x01)
+#   17       format revision byte: '2' (0x32) — parameterized field widths
+#   18       fpW       (1 b254 byte: digit = width in bytes, 1..4)
+#   19       koffW     (1 b254 byte: 1..4)
+#   20       klenW     (1 b254 byte: 1..3)
+#   21       vlenW     (1 b254 byte: 1..3)
+#   22..63   spaces (header is 64 bytes)
+#   64..     M entries of EW bytes, EW = fpW + koffW + klenW + vlenW
+#            (7..14), fields at entry offsets:
+#            fp @0 (fpW) | keyOff @fpW (koffW) | keyLen @fpW+koffW (klenW)
+#            | valLen @fpW+koffW+klenW (vlenW)
+#            (unused slot: EW bytes of 0x01)
 #   then     data region: for each key in JSON insertion order, the key's
 #            UTF-8 bytes immediately followed by the value's UTF-8 bytes.
 #            keyOff is absolute from the file start; the value offset is
@@ -37,9 +44,12 @@ NFK v3 layout (all offsets absolute, chars == bytes):
 # (kv3.nix imports it; it costs nothing per lookup).
 
 Hashing: h = sha256(key) in lowercase hex.
-Fingerprint fp = int(h[0:6], 16) + 1 — a 24-bit value stored in 4 b254
-bytes; 0 marks an unused slot. Initial slot s0 = int(h[56:64], 16) AND
-(M-1); linear probing, first empty slot wins. M = next_pow2(max(16,
+Fingerprint fp = int(h[0:6], 16) + 1 — a 24-bit value; 0 marks an
+unused slot. The width fpW is chosen per table, but a 24-bit value needs
+4 b254 bytes (254^3 - 1 < 2^24), so fpW = 4 today; the header field
+stays so a narrower fingerprint (e.g. a folded hex digest) can be
+adopted without a layout change. Initial slot s0 = int(h[56:64], 16)
+AND (M-1); linear probing, first empty slot wins. M = next_pow2(max(16,
 ceil(1.25*n))), so load <= 0.8. The fingerprint is compared as an int;
 a hit is always confirmed by a byte-for-byte key comparison, so a
 24-bit fingerprint (expected ~N^2/2^24 false pairs at 200k keys) can
@@ -52,9 +62,12 @@ byte Nix's readFile rejects). kv3.nix decodes a field byte via the static
 nfd3-table.nix attrset (byte 1-char string -> digit), imported once per
 eval (import cache); the table is a format constant, not file data.
 
-Limits (builder-enforced): N, keyTotal, valTotal, and per-key/value
-lengths < 254^3; M and file offsets < 254^4. No key or value may
-contain a NUL byte.
+Limits (builder-enforced): N, keyTotal, valTotal < 254^3; per-key/value
+lengths < 254^3 (widths capped at 3 bytes); M and keyOff < 254^4 (widths
+capped at 4 bytes); no key or value may contain a NUL byte. Entry field
+widths (fpW, koffW, klenW, vlenW) are the minimum that fit the table's
+maximum fp / key offset / key length / value length, stored once in the
+header.
 
 JSON input: an object; duplicate keys keep the last (dict semantics,
 matching fromJSON). Keys must be strings; values are arbitrary JSON:
@@ -69,18 +82,19 @@ import os
 import sys
 
 MAGIC = b"NFK3"
-REV = 49                              # format revision byte: '1'
+REV = 50                              # format revision byte: '2'
 H = 64
 T0 = H                                # index region start (table is static)
-EW = 15                             # entry width
-FPW = 4                             # fingerprint field width (b254)
-FO = 4                              # offset field width
-FL = 3                              # length/count field width
+FPW = 4                               # fingerprint field width (b254)
+FO = 4                               # M / keyOff field width (b254)
+FL = 3                               # N / totals / key|value len field width
 B = 254
-MAX_FIELD3 = B ** FL - 1            # 16,387,063
-MAX_FIELD4 = B ** FO - 1            # 4,162,314,255
+MAX_FIELD3 = B ** FL - 1             # 16,387,063
+MAX_FIELD4 = B ** FO - 1             # 4,162,314,255
 
-# entry layout: fp @0 (4) | keyOff @4 (4) | keyLen @8 (3) | valLen @11 (3)
+# entry layout (revision 2): fp @0 (fpW) | keyOff @fpW (koffW)
+#   | keyLen @fpW+koffW (klenW) | valLen @fpW+koffW+klenW (vlenW)
+#   entry width EW = fpW + koffW + klenW + vlenW (7..14), widths in header
 
 
 def enc(v, digits):
@@ -107,6 +121,16 @@ def next_pow2(v):
     while p < v:
         p *= 2
     return p
+
+
+def width_for(v, maxw, what):
+    """Smallest b254 byte width (1..maxw) that holds v; raise if none."""
+    w = 1
+    while v > B ** w - 1:
+        w += 1
+        if w > maxw:
+            raise ValueError(f"{what} {v} needs more than {maxw} b254 bytes")
+    return w
 
 
 def fp_of(kb):
@@ -150,6 +174,27 @@ def build(pairs):
     if key_total > MAX_FIELD3 or val_total > MAX_FIELD3:
         raise ValueError("key/value data region too large")
 
+    # Field widths (revision 2): the smallest per-field byte widths that
+    # fit this table's maxima, stored once in the header.
+    max_klen = max(map(len, kb_list)) if kb_list else 0
+    max_vlen = max(map(len, vb_list)) if vb_list else 0
+    klenW = width_for(max_klen, FL, "key length")
+    vlenW = width_for(max_vlen, FL, "value length")
+    # The keyOff width depends on the entry width (the data region starts
+    # after the index region), so iterate to a fixpoint: monotone, so it
+    # converges in at most FO rounds.
+    data_len = len(data_region)
+    last_kv = (len(kb_list[-1]) + len(vb_list[-1])) if kb_list else 0
+    koffW = 1
+    for _ in range(FO):
+        ew = FPW + koffW + klenW + vlenW
+        max_koff = T0 + ew * m + data_len - last_kv
+        need = width_for(max_koff, FO, "key offset")
+        if need <= koffW:
+            break
+        koffW = need
+    ew = FPW + koffW + klenW + vlenW
+
     # open addressing, first empty slot (identical to the Nix side)
     slot_of = {}
     fp_of_i = {}
@@ -170,30 +215,46 @@ def build(pairs):
         + enc(m, FO)
         + enc(key_total, FL)
         + enc(val_total, FL)
-        + bytes([REV])
+        + bytes([REV, FPW + 1, koffW + 1, klenW + 1, vlenW + 1])
     )
     header += b" " * (H - len(header))
     assert len(header) == H
 
-    idx = bytearray(b"\x01" * (EW * m))   # b254 zero = unused slot
+    o_koff = FPW
+    o_klen = FPW + koffW
+    o_vlen = FPW + koffW + klenW
+    idx = bytearray(b"\x01" * (ew * m))   # b254 zero = unused slot
     # NOTE: e below is buffer-relative (idx starts at file offset T0).
-    ko = T0 + EW * m
+    ko = T0 + ew * m
     for i in range(n):
         kb, vb = kb_list[i], vb_list[i]
-        if len(kb) > MAX_FIELD3 or len(vb) > MAX_FIELD3:
-            raise ValueError(f"key or value too long: {len(kb)}, {len(vb)}")
-        e = EW * slot_of[i]
-        assert e + EW <= len(idx)
+        e = ew * slot_of[i]
+        assert e + ew <= len(idx)
         idx[e:e + FPW] = enc(fp_of_i[i], FPW)
-        idx[e + FPW:e + FPW + FO] = enc(ko, FO)
-        idx[e + FPW + FO:e + FPW + FO + FL] = enc(len(kb), FL)
-        idx[e + FPW + FO + FL:e + FPW + FO + 2 * FL] = enc(len(vb), FL)
+        idx[e + o_koff:e + o_koff + koffW] = enc(ko, koffW)
+        idx[e + o_klen:e + o_klen + klenW] = enc(len(kb), klenW)
+        idx[e + o_vlen:e + o_vlen + vlenW] = enc(len(vb), vlenW)
         ko += len(kb) + len(vb)
 
     blob = header + bytes(idx) + data_region
     if len(blob) > MAX_FIELD4:
         raise ValueError("file too large for 4-byte b254 offsets")
     return blob
+
+def header_widths(data):
+    """(fpW, koffW, klenW, vlenW) from a revision-2 header, validated."""
+    fpW = data[18] - 1
+    koffW = data[19] - 1
+    klenW = data[20] - 1
+    vlenW = data[21] - 1
+    if not (1 <= fpW <= FO and 1 <= koffW <= FO
+            and 1 <= klenW <= FL and 1 <= vlenW <= FL):
+        raise ValueError(
+            f"bad field widths: fpW={fpW} koffW={koffW} "
+            f"klenW={klenW} vlenW={vlenW}"
+        )
+    return fpW, koffW, klenW, vlenW
+
 
 
 def parse(path):
@@ -209,11 +270,14 @@ def parse(path):
         raise ValueError(f"table size {m} < entry count {n}")
     if data[17] != REV:
         raise ValueError(f"bad revision byte: {data[17]:#04x}")
-    if data[18:H] != b" " * (H - 18):
+    fpW, koffW, klenW, vlenW = header_widths(data)
+    if data[22:H] != b" " * (H - 22):
         raise ValueError("header reserved region not spaces")
     if 0 in data:
         raise ValueError("file contains NUL (invalid for Nix readFile)")
-    d0 = T0 + EW * m
+    ew = fpW + koffW + klenW + vlenW
+    o_koff, o_klen, o_vlen = fpW, fpW + koffW, fpW + koffW + klenW
+    d0 = T0 + ew * m
     if len(data) != d0 + key_total + val_total:
         raise ValueError(
             f"size mismatch: file {len(data)}, "
@@ -221,13 +285,13 @@ def parse(path):
         )
     out = []
     for s in range(m):
-        e = T0 + EW * s
-        fp = dec(data[e:e + FPW], FPW)
+        e = T0 + ew * s
+        fp = dec(data[e:e + fpW], fpW)
         if fp == 0:
             continue
-        koff = dec(data[e + FPW:e + FPW + FO], FO)
-        klen = dec(data[e + FPW + FO:e + 2 * FPW + FO + FL], FL)
-        vlen = dec(data[e + FPW + FO + FL:e + FPW + FO + 2 * FL], FL)
+        koff = dec(data[e + o_koff:e + o_koff + koffW], koffW)
+        klen = dec(data[e + o_klen:e + o_klen + klenW], klenW)
+        vlen = dec(data[e + o_vlen:e + o_vlen + vlenW], vlenW)
         out.append(
             (
                 data[koff:koff + klen].decode("utf-8"),
@@ -239,25 +303,33 @@ def parse(path):
     return n, m, out
 
 
+def entry_geometry(data):
+    """(ew, fpW, koffW, klenW, vlenW, o_koff, o_klen, o_vlen) from header."""
+    fpW, koffW, klenW, vlenW = header_widths(data)
+    ew = fpW + koffW + klenW + vlenW
+    o_koff, o_klen, o_vlen = fpW, fpW + koffW, fpW + koffW + klenW
+    return ew, fpW, koffW, klenW, vlenW, o_koff, o_klen, o_vlen
+
+
 def python_get_data(data, key):
     """Open-addressing probe over in-memory file bytes — independent of
     the Nix implementation."""
-    n = dec(data[4:7], FL)
     m = dec(data[7:11], FO)
+    ew, fpW, koffW, klenW, vlenW, o_koff, o_klen, o_vlen = entry_geometry(data)
     kb = key.encode("utf-8")
     fp, hlo = fp_of(kb)
     s0 = hlo & (m - 1)
     for i in range(m):
         s = (s0 + i) & (m - 1)
-        e = T0 + EW * s
-        efp = dec(data[e:e + FPW], FPW)
+        e = T0 + ew * s
+        efp = dec(data[e:e + fpW], fpW)
         if efp == 0:
             return None
         if efp == fp:
-            koff = dec(data[e + FPW:e + FPW + FO], FO)
-            klen = dec(data[e + FPW + FO:e + 2 * FPW + FO + FL], FL)
+            koff = dec(data[e + o_koff:e + o_koff + koffW], koffW)
+            klen = dec(data[e + o_klen:e + o_klen + klenW], klenW)
             if data[koff:koff + klen] == kb:
-                vlen = dec(data[e + FPW + FO + FL:e + FPW + FO + 2 * FL], FL)
+                vlen = dec(data[e + o_vlen:e + ew], vlenW)
                 return data[koff + klen:koff + klen + vlen].decode("utf-8")
     return None
 
@@ -436,9 +508,12 @@ def main():
     with open(args.output, "wb") as f:
         f.write(data)
     n, m = dec(data[4:7], FL), dec(data[7:11], FO)
+    fpW, koffW, klenW, vlenW = header_widths(data)
     print(
         f"wrote {args.output}: {len(data)} bytes, {n} entries, "
-        f"M={m} load={n / m:.3f}"
+        f"M={m} load={n / m:.3f}, "
+        f"widths fp={fpW} off={koffW} klen={klenW} vlen={vlenW} "
+        f"(EW={fpW + koffW + klenW + vlenW})"
     )
 
     if args.check:
