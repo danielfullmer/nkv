@@ -13,53 +13,53 @@
   "configs": {
     "versions/n=0": {
       "fromJSON": {
-        "ms_min": 155.5,
-        "ms_median": 157.4,
+        "ms_min": 148.4,
+        "ms_median": 156.9,
         "ms_all": [
-          157.4,
-          164.3,
-          155.5
+          148.4,
+          156.9,
+          156.9
         ],
         "out_bytes": 4
       },
       "nfk3": {
-        "ms_min": 41.9,
-        "ms_median": 44.7,
+        "ms_min": 42.6,
+        "ms_median": 43.3,
         "ms_all": [
-          44.7,
-          41.9,
-          44.8
+          43.3,
+          43.4,
+          42.6
         ],
         "out_bytes": 5
       }
     },
     "versions/n=1": {
       "fromJSON": {
-        "ms_min": 146.1,
-        "ms_median": 152.6,
+        "ms_min": 155.1,
+        "ms_median": 156.0,
         "ms_all": [
-          152.6,
-          146.1,
-          156.1
+          156.0,
+          167.0,
+          155.1
         ],
         "out_bytes": 84
       },
       "nfk3": {
-        "ms_min": 43.2,
-        "ms_median": 43.2,
+        "ms_min": 38.9,
+        "ms_median": 44.5,
         "ms_all": [
-          46.7,
-          43.2,
-          43.2
+          44.8,
+          44.5,
+          38.9
         ],
         "out_bytes": 84
       },
       "nfk3s": {
-        "ms_min": 33.7,
+        "ms_min": 33.0,
         "ms_median": 33.9,
         "ms_all": [
-          33.7,
-          35.7,
+          33.0,
+          35.0,
           33.9
         ],
         "out_bytes": 84
@@ -67,374 +67,374 @@
     },
     "versions/n=5": {
       "fromJSON": {
-        "ms_min": 156.7,
-        "ms_median": 157.6,
+        "ms_min": 155.4,
+        "ms_median": 155.5,
         "ms_all": [
-          157.6,
-          156.7,
-          158.5
+          155.5,
+          157.7,
+          155.4
         ],
         "out_bytes": 442
       },
       "nfk3": {
-        "ms_min": 40.8,
-        "ms_median": 42.2,
+        "ms_min": 44.3,
+        "ms_median": 47.3,
         "ms_all": [
-          49.5,
-          40.8,
-          42.2
+          47.3,
+          49.7,
+          44.3
         ],
         "out_bytes": 442
       },
       "nfk3s": {
-        "ms_min": 34.4,
-        "ms_median": 35.6,
+        "ms_min": 33.3,
+        "ms_median": 34.0,
         "ms_all": [
-          35.6,
-          35.7,
-          34.4
+          35.1,
+          34.0,
+          33.3
         ],
         "out_bytes": 442
       }
     },
     "versions/n=10": {
       "fromJSON": {
-        "ms_min": 151.2,
-        "ms_median": 153.2,
+        "ms_min": 156.1,
+        "ms_median": 158.4,
         "ms_all": [
-          153.2,
-          162.3,
-          151.2
+          158.4,
+          167.6,
+          156.1
         ],
         "out_bytes": 1025
       },
       "nfk3": {
-        "ms_min": 43.2,
-        "ms_median": 43.4,
+        "ms_min": 41.9,
+        "ms_median": 42.9,
         "ms_all": [
-          44.3,
-          43.4,
-          43.2
+          45.2,
+          42.9,
+          41.9
         ],
         "out_bytes": 1025
       },
       "nfk3s": {
-        "ms_min": 34.6,
-        "ms_median": 35.8,
+        "ms_min": 24.7,
+        "ms_median": 34.8,
         "ms_all": [
-          34.6,
-          36.7,
-          35.8
+          24.7,
+          34.8,
+          36.4
         ],
         "out_bytes": 1025
       }
     },
     "versions/n=30": {
       "fromJSON": {
-        "ms_min": 153.3,
-        "ms_median": 158.6,
+        "ms_min": 154.5,
+        "ms_median": 157.6,
         "ms_all": [
-          160.6,
-          158.6,
-          153.3
+          162.4,
+          157.6,
+          154.5
         ],
         "out_bytes": 7591
       },
       "nfk3": {
-        "ms_min": 43.7,
-        "ms_median": 43.8,
+        "ms_min": 43.3,
+        "ms_median": 46.2,
         "ms_all": [
-          43.8,
-          48.1,
-          43.7
+          43.3,
+          46.3,
+          46.2
         ],
         "out_bytes": 7591
       },
       "nfk3s": {
-        "ms_min": 34.8,
-        "ms_median": 35.7,
+        "ms_min": 36.4,
+        "ms_median": 38.6,
         "ms_all": [
-          38.6,
-          35.7,
-          34.8
+          36.4,
+          41.5,
+          38.6
         ],
         "out_bytes": 7591
       }
     },
     "versions/n=100": {
       "fromJSON": {
-        "ms_min": 156.8,
-        "ms_median": 156.9,
+        "ms_min": 156.3,
+        "ms_median": 157.3,
         "ms_all": [
-          156.9,
-          156.8,
-          158.6
+          157.9,
+          156.3,
+          157.3
         ],
         "out_bytes": 18374
       },
       "nfk3": {
-        "ms_min": 45.8,
-        "ms_median": 47.8,
+        "ms_min": 46.9,
+        "ms_median": 47.2,
         "ms_all": [
-          48.6,
-          45.8,
-          47.8
+          47.2,
+          48.0,
+          46.9
         ],
         "out_bytes": 18374
       },
       "nfk3s": {
-        "ms_min": 42.8,
-        "ms_median": 43.4,
+        "ms_min": 44.4,
+        "ms_median": 45.9,
         "ms_all": [
-          43.4,
-          47.2,
-          42.8
+          46.6,
+          44.4,
+          45.9
         ],
         "out_bytes": 18374
       }
     },
     "versions/n=200": {
       "fromJSON": {
-        "ms_min": 156.6,
-        "ms_median": 157.5,
+        "ms_min": 158.7,
+        "ms_median": 159.0,
         "ms_all": [
-          157.5,
-          156.6,
-          157.5
+          158.7,
+          161.9,
+          159.0
         ],
         "out_bytes": 29378
       },
       "nfk3": {
-        "ms_min": 44.9,
-        "ms_median": 45.3,
+        "ms_min": 48.3,
+        "ms_median": 49.5,
         "ms_all": [
-          45.3,
-          44.9,
-          50.4
+          49.6,
+          49.5,
+          48.3
         ],
         "out_bytes": 29378
       },
       "nfk3s": {
-        "ms_min": 41.6,
-        "ms_median": 53.0,
+        "ms_min": 52.1,
+        "ms_median": 53.5,
         "ms_all": [
-          65.0,
-          53.0,
-          41.6
+          53.5,
+          56.8,
+          52.1
         ],
         "out_bytes": 29378
       }
     },
     "history/n=0": {
       "fromJSON": {
-        "ms_min": 249.3,
-        "ms_median": 250.4,
+        "ms_min": 255.4,
+        "ms_median": 257.7,
         "ms_all": [
-          250.4,
-          249.3,
-          257.3
+          257.9,
+          255.4,
+          257.7
         ],
         "out_bytes": 4
       },
       "nfk3": {
-        "ms_min": 45.3,
-        "ms_median": 46.0,
+        "ms_min": 45.5,
+        "ms_median": 49.4,
         "ms_all": [
-          46.1,
-          46.0,
-          45.3
+          49.4,
+          55.2,
+          45.5
         ],
         "out_bytes": 5
       }
     },
     "history/n=1": {
       "fromJSON": {
-        "ms_min": 249.4,
-        "ms_median": 251.2,
+        "ms_min": 257.6,
+        "ms_median": 258.9,
         "ms_all": [
-          252.5,
-          249.4,
-          251.2
+          258.9,
+          266.4,
+          257.6
         ],
         "out_bytes": 147
       },
       "nfk3": {
-        "ms_min": 45.3,
-        "ms_median": 48.3,
+        "ms_min": 36.9,
+        "ms_median": 42.6,
         "ms_all": [
-          48.3,
-          52.2,
-          45.3
+          47.8,
+          36.9,
+          42.6
         ],
         "out_bytes": 147
       },
       "nfk3s": {
-        "ms_min": 31.2,
-        "ms_median": 34.6,
+        "ms_min": 34.2,
+        "ms_median": 35.1,
         "ms_all": [
-          31.2,
-          35.4,
-          34.6
+          34.2,
+          35.5,
+          35.1
         ],
         "out_bytes": 147
       }
     },
     "history/n=5": {
       "fromJSON": {
-        "ms_min": 250.0,
-        "ms_median": 251.6,
+        "ms_min": 255.5,
+        "ms_median": 255.9,
         "ms_all": [
-          251.6,
-          250.0,
-          252.6
+          255.9,
+          255.5,
+          259.2
         ],
         "out_bytes": 676
       },
       "nfk3": {
-        "ms_min": 46.0,
-        "ms_median": 47.2,
+        "ms_min": 45.0,
+        "ms_median": 48.4,
         "ms_all": [
-          46.0,
-          48.6,
-          47.2
+          48.4,
+          50.3,
+          45.0
         ],
         "out_bytes": 676
       },
       "nfk3s": {
-        "ms_min": 31.1,
-        "ms_median": 35.2,
+        "ms_min": 32.5,
+        "ms_median": 35.0,
         "ms_all": [
-          35.2,
-          38.5,
-          31.1
+          39.5,
+          32.5,
+          35.0
         ],
         "out_bytes": 676
       }
     },
     "history/n=10": {
       "fromJSON": {
-        "ms_min": 248.8,
-        "ms_median": 253.6,
+        "ms_min": 254.7,
+        "ms_median": 256.6,
         "ms_all": [
-          248.8,
-          255.8,
-          253.6
+          258.4,
+          256.6,
+          254.7
         ],
         "out_bytes": 1545
       },
       "nfk3": {
-        "ms_min": 45.7,
-        "ms_median": 47.5,
+        "ms_min": 43.9,
+        "ms_median": 48.4,
         "ms_all": [
-          47.7,
-          45.7,
-          47.5
+          43.9,
+          48.5,
+          48.4
         ],
         "out_bytes": 1545
       },
       "nfk3s": {
-        "ms_min": 34.9,
-        "ms_median": 35.4,
+        "ms_min": 36.5,
+        "ms_median": 36.6,
         "ms_all": [
-          35.4,
-          37.4,
-          34.9
+          37.0,
+          36.5,
+          36.6
         ],
         "out_bytes": 1545
       }
     },
     "history/n=30": {
       "fromJSON": {
-        "ms_min": 248.8,
-        "ms_median": 257.5,
+        "ms_min": 244.2,
+        "ms_median": 256.6,
         "ms_all": [
-          259.9,
-          248.8,
-          257.5
+          244.2,
+          256.6,
+          257.4
         ],
         "out_bytes": 10596
       },
       "nfk3": {
-        "ms_min": 46.7,
-        "ms_median": 48.6,
+        "ms_min": 38.4,
+        "ms_median": 47.7,
         "ms_all": [
-          46.7,
           49.6,
-          48.6
+          47.7,
+          38.4
         ],
         "out_bytes": 10596
       },
       "nfk3s": {
-        "ms_min": 37.2,
-        "ms_median": 38.0,
+        "ms_min": 35.7,
+        "ms_median": 36.1,
         "ms_all": [
-          38.0,
-          40.8,
-          37.2
+          36.1,
+          37.8,
+          35.7
         ],
         "out_bytes": 10596
       }
     },
     "history/n=100": {
       "fromJSON": {
-        "ms_min": 254.2,
-        "ms_median": 255.2,
+        "ms_min": 256.6,
+        "ms_median": 256.9,
         "ms_all": [
-          257.0,
-          255.2,
-          254.2
+          258.3,
+          256.9,
+          256.6
         ],
         "out_bytes": 26358
       },
       "nfk3": {
-        "ms_min": 48.9,
-        "ms_median": 49.5,
+        "ms_min": 49.0,
+        "ms_median": 49.3,
         "ms_all": [
-          48.9,
-          50.6,
-          49.5
+          49.3,
+          50.7,
+          49.0
         ],
         "out_bytes": 26358
       },
       "nfk3s": {
-        "ms_min": 42.4,
-        "ms_median": 43.7,
+        "ms_min": 44.9,
+        "ms_median": 46.6,
         "ms_all": [
-          45.3,
-          43.7,
-          42.4
+          47.1,
+          44.9,
+          46.6
         ],
         "out_bytes": 26358
       }
     },
     "history/n=200": {
       "fromJSON": {
-        "ms_min": 253.5,
-        "ms_median": 257.1,
+        "ms_min": 255.3,
+        "ms_median": 259.7,
         "ms_all": [
-          257.1,
-          253.5,
-          268.4
+          266.2,
+          255.3,
+          259.7
         ],
         "out_bytes": 42326
       },
       "nfk3": {
-        "ms_min": 43.0,
-        "ms_median": 52.7,
+        "ms_min": 43.5,
+        "ms_median": 48.1,
         "ms_all": [
-          54.5,
-          52.7,
-          43.0
+          43.5,
+          54.7,
+          48.1
         ],
         "out_bytes": 42326
       },
       "nfk3s": {
-        "ms_min": 43.4,
-        "ms_median": 55.0,
+        "ms_min": 56.9,
+        "ms_median": 60.4,
         "ms_all": [
-          55.0,
-          43.4,
-          73.6
+          60.4,
+          76.0,
+          56.9
         ],
         "out_bytes": 42326
       }

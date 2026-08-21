@@ -1,17 +1,18 @@
 # NFK v3 (dense hash, binary index) — fast static key/value lookup over a
-# precomputed file, using only builtins.readFile and builtins.substring
-# (plus builtins.hashString and integer math).
+# precomputed file, using only builtins.readFile, builtins.substring,
+# builtins.hashString and integer math.
 #
-# NFK v1/v2 algorithm (sha256 fingerprint + linear probing over a
-# power-of-two table at load <= 0.8), but with NKB v2's binary index
-# machinery: each numeric field is 3-4 "b254" bytes (one byte per digit,
-# byte = digit + 1, big-endian) and the byte->int decode table is carried
-# in the file itself (255 bytes 0x01..0xFF at offset 64), folded into an
-# attrset at import time unless the caller supplies it. No high byte ever
-# appears in .nix source.
-# `db` is a path or string, or { file, table } for callers that share one
-# prebuilt char->int decode table across many imports (kv3s.nix does this:
-# every file carries the identical table bytes at offset 64).
+# Open addressing: sha256 fingerprint + linear probing over a power-of-two
+# table at load <= 0.8. Each numeric field is 3-4 "b254" bytes (one byte
+# per digit, byte = digit + 1, big-endian) so the file never contains NUL
+# (the one byte Nix's readFile rejects). Field bytes are decoded via the
+# static decode table `nfd3-table.nix` (255-entry attrset, byte 1-char
+# string -> digit). The table is a format constant shared by every NFK v3
+# file — it is NOT carried in the database — and is imported once per eval
+# (Nix import cache), so it costs nothing per lookup. Generate it with
+# `python3 build_db3.py --write-table nfd3-table.nix`.
+#
+# `db` is the path (or string path) of one NFK v3 file.
 #
 # Layout (chars == bytes):
 #   0..3    magic "NFK3"
@@ -19,9 +20,9 @@
 #   7..10   M         4 b254 bytes
 #   11..13  keyTotal  3 b254 bytes
 #   14..16  valTotal  3 b254 bytes
-#   17..63  reserved (spaces)
-#   64..318 byte table T: 0x01 .. 0xFF
-#   319..   M entries of 15 bytes: fp 4 | keyOff 4 | keyLen 3 | valLen 3
+#   17      format revision byte: '1'
+#   18..63  reserved (spaces)
+#   64..    M entries of 15 bytes: fp 4 | keyOff 4 | keyLen 3 | valLen 3
 #   then    data region: for each key in insertion order, the key's bytes
 #           followed immediately by the value's bytes; keyOff is absolute
 #           from the file start, the value offset is keyOff + keyLen.
@@ -37,7 +38,7 @@
 
 let
   H = 64;    # header width
-  T0 = 319;  # index region start (H + 255-byte table)
+  T0 = H;    # index region start
   W = 15;    # index entry width
   B = 254;   # b254 base (digit 0..253 -> byte 1..254)
 
@@ -50,24 +51,10 @@ let
 in
 db:
   let
-    # db is a path or string, or { file, table }: the attrset form lets a
-    # caller share one prebuilt char->int decode table across many
-    # imports — kv3s.nix builds it once per eval, since every NFK v3 file
-    # carries the identical 255 table bytes at offset 64.
-    direct = builtins.isString db || builtins.isPath db;
-    f = if direct then db else db.file;
-    raw = builtins.readFile f;
+    raw = builtins.readFile db;
 
-    # Byte table carried in the file: T[i] is the byte whose value is i+1.
-    # Built into an attrset once at import; no high byte ever appears in
-    # .nix source.
-    T = builtins.substring H 255 raw;
-    table =
-      if direct
-      then builtins.foldl' (t: i: t // { "${builtins.substring i 1 T}" = i; })
-           {}
-           (builtins.genList (i: i) 255)
-      else db.table;
+    # Static decode table (format constant): byte 1-char string -> digit.
+    table = import ./nfd3-table.nix;
 
     # 1 byte at absolute position p -> int value (0..253)
     byte = p: table."${builtins.substring p 1 raw}";
@@ -121,7 +108,7 @@ db:
           0;
   in
   assert (builtins.substring 0 4 raw) == "NFK3";
-  assert (builtins.stringLength T) == 255;
+  assert (builtins.substring 17 1 raw) == "1";
   assert (builtins.stringLength raw) == T0 + W * m + keyTotal + valTotal;
   let
   in

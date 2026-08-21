@@ -1,160 +1,126 @@
 #!/usr/bin/env python3
-"""Benchmark NFK lookups (kv.nix) against builtins.fromJSON attrset lookups.
+"""Cold nix-eval benchmark of the three lookup methods on the large
+dataset (200,000 keys, data/large.json):
 
-Scenarios (per dataset size):
-  cold_present  K fresh `nix eval` runs, each doing exactly one lookup of a
-                present key.  This is the realistic case: every `nix eval`
-                is a cold process that must load its data source.
-  cold_miss     same, but for a missing key (hasAttr vs db.has).
-  warm_200      single `nix eval` performing 200 lookups in-process
-                (literal key list shared by both methods, so each method
-                pays only its own load cost + 200 lookups).
-  floors        nix startup floor / readFile floor / fromJSON-parse floor.
+  fromJSON : builtins.fromJSON over the whole 22 MiB JSON file
+  nfk3     : single-file NFK v3 (kv3.nix get)
+  nfk3s    : sharded NFK v3 (kv3s.nix, 256 shard files, digits = 2) —
+             only the key's shard file is read (n=0 not applicable:
+             there is no whole-file load; n=1 is the intercept point)
 
-Every scenario asserts output correctness against the JSON source.
+Workload: one cold `nix eval --impure --raw` process answers N queries
+(N key lookups; N=0 = load only). Queries are 200 strided samples of the
+sorted keys (all present; every method must return the same values).
+
+The sharded dataset is data/large_shards/ (build:
+  python3 build_db3.py data/large.json --shards 256 --prefix data/large_shards/ --check)
+
+Usage: bench.py [runs_per_config]
 """
-import argparse
 import json
 import os
 import statistics
 import subprocess
+import sys
 import time
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-KV = f"{BASE}/kv.nix"
-KV_LABEL = "kvl"
-EXT = "nfd"
-OUT = f"{BASE}/bench_results.json"
-SIZES = ["small", "medium", "large"]
-COLD_REPS = 15
-WARM_REPS = 3
-WARM_KEYS = 200
-MISS_KEY = "zzz_missing_key_zzz"
+HERE = os.path.dirname(os.path.abspath(__file__))
+KV3 = os.path.join(HERE, "kv3.nix")
+KV3S = os.path.join(HERE, "kv3s.nix")
+JSON = os.path.join(HERE, "data/large.json")
+TABLE = os.path.join(HERE, "data/large.nfd3")
+SHARDS = os.path.join(HERE, "data/large_shards")
+NQS = 200
+NS = [0, 1, 5, 10, 30, 100, 200]
 
 
-def nix_eval(expr, raw=False):
-    args = ["nix", "eval", "--impure"]
-    if raw:
-        args.append("--raw")
-    args += ["--expr", expr]
-    t0 = time.perf_counter()
-    r = subprocess.run(args, capture_output=True, text=True)
-    dt = time.perf_counter() - t0
-    if r.returncode != 0:
-        raise RuntimeError(f"nix eval failed:\n{r.stderr[:3000]}")
-    return dt, r.stdout
+def queries_for(json_path, nqs=NQS):
+    d = json.load(open(json_path))
+    keys = sorted(d)
+    step = max(1, len(keys) // nqs)
+    return [keys[i] for i in range(0, len(keys), step)][:nqs]
 
 
-def timeit(expr, reps, raw=False):
-    ts, outs = [], []
-    for _ in range(reps):
-        dt, out = nix_eval(expr, raw)
-        ts.append(dt)
-        outs.append(out)
-    return ts, outs
+def qlit(qs):
+    return "[ " + " ".join(json.dumps(q) for q in qs) + " ]"
 
 
-def stats(ts):
-    s = sorted(ts)
-    n = len(s)
-    return {
-        "min_ms": round(s[0] * 1000, 1),
-        "med_ms": round(statistics.median(s) * 1000, 1),
-        "mean_ms": round(statistics.fmean(s) * 1000, 1),
-        "max_ms": round(s[-1] * 1000, 1),
-    }
+def expr_fromjson(qs):
+    if not qs:
+        return ("let o = builtins.fromJSON (builtins.readFile %s); "
+                "in builtins.toJSON (builtins.length (builtins.attrNames o))"
+                % json.dumps(JSON))
+    return ("let o = builtins.fromJSON (builtins.readFile %s); qs = %s; "
+            "in builtins.toJSON (builtins.map (a: o.${a}) qs)"
+            % (json.dumps(JSON), qlit(qs)))
+
+
+def expr_nfk3(qs):
+    if not qs:
+        return ("let db = import %s %s; in builtins.toJSON db.count"
+                % (json.dumps(KV3), json.dumps(TABLE)))
+    return ("let db = import %s %s; qs = %s; "
+            "in builtins.toJSON (builtins.map (a: db.get a) qs)"
+            % (json.dumps(KV3), json.dumps(TABLE), qlit(qs)))
+
+
+def expr_nfk3s(qs):
+    """Sharded NFK v3: only the shard a key hashes to is read."""
+    if not qs:
+        return None  # no whole-file load point; n=1 is the intercept
+    return ("let db = import %s { digits = 2; dir = %s; }; qs = %s; "
+            "in builtins.toJSON (builtins.map (a: db.get a) qs)"
+            % (json.dumps(KV3S), json.dumps(SHARDS), qlit(qs)))
+
+
+def run_eval(expr, timeout=120):
+    t0 = time.monotonic()
+    p = subprocess.run(["nix", "eval", "--impure", "--raw", "--expr", expr],
+                       capture_output=True, text=True, timeout=timeout)
+    dt = (time.monotonic() - t0) * 1000
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.strip()[:500])
+    return dt, p.stdout
 
 
 def main():
-    global KV, EXT, KV_LABEL, OUT
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--kv", default=KV)
-    ap.add_argument("--ext", default=EXT)
-    ap.add_argument("--label", default=KV_LABEL)
-    ap.add_argument("--out", default=OUT)
-    a = ap.parse_args()
-    KV, EXT, KV_LABEL, OUT = a.kv, a.ext, a.label, a.out
-
-    # one-time startup floor (no file access at all)
-    ts, _ = timeit('"hello"', 5)
-    startup = stats(ts)
-
-    results = {"startup_ms": startup}
-    for size in SIZES:
-        J = f"{BASE}/data/{size}.json"
-        N = f"{BASE}/data/{size}.{EXT}"
-        obj = json.load(open(J))
-        names = list(obj)
-        key0 = names[0]
-        expected = obj[key0]
-        assert MISS_KEY not in obj
-        warm_keys = names[:WARM_KEYS]
-        keylist = "[" + " ".join(f'"{k}"' for k in warm_keys) + "]"
-        exp_sum = sum(len(obj[k]) for k in warm_keys)
-
-        r = {}
-
-        # ---- 1. cold single lookup, present key --------------------------
-        e_fj = f'(builtins.fromJSON (builtins.readFile {J}))."{key0}"'
-        e_kv = f'((import {KV}) {N}).get "{key0}"'
-        ts_fj, out_fj = timeit(e_fj, COLD_REPS, raw=True)
-        ts_kv, out_kv = timeit(e_kv, COLD_REPS, raw=True)
-        assert all(o.rstrip("\n") == expected for o in out_fj), "fromJSON cold mismatch"
-        assert all(o.rstrip("\n") == expected for o in out_kv), "kvl cold mismatch"
-        r["cold_present"] = {"fromJSON": stats(ts_fj), KV_LABEL: stats(ts_kv)}
-
-        # ---- 2. cold miss --------------------------------------------------
-        e_fj2 = f'builtins.hasAttr "{MISS_KEY}" (builtins.fromJSON (builtins.readFile {J}))'
-        e_kv2 = f'((import {KV}) {N}).has "{MISS_KEY}"'
-        ts_fj, out_fj = timeit(e_fj2, COLD_REPS)
-        ts_kv, out_kv = timeit(e_kv2, COLD_REPS)
-        assert all(o.strip() == "false" for o in out_fj), "fromJSON miss mismatch"
-        assert all(o.strip() == "false" for o in out_kv), "kvl miss mismatch"
-        r["cold_miss"] = {"fromJSON": stats(ts_fj), KV_LABEL: stats(ts_kv)}
-
-        # ---- 3. warm batch: WARM_KEYS lookups in a single eval ------------
-        e_fj3 = (
-            f'let j = builtins.fromJSON (builtins.readFile {J}); '
-            f'in builtins.foldl\' (acc: k: acc + builtins.stringLength (j."${{k}}")) '
-            f"0 {keylist}"
-        )
-        e_kv3 = (
-            f'let db = (import {KV}) {N}; '
-            f"in builtins.foldl' (acc: k: acc + builtins.stringLength (db.get k)) "
-            f"0 {keylist}"
-        )
-        ts_fj, out_fj = timeit(e_fj3, WARM_REPS)
-        ts_kv, out_kv = timeit(e_kv3, WARM_REPS)
-        assert all(int(o.strip()) == exp_sum for o in out_fj), "fromJSON warm sum mismatch"
-        assert all(int(o.strip()) == exp_sum for o in out_kv), "kvl warm sum mismatch"
-        r["warm_200"] = {
-            "fromJSON": stats(ts_fj),
-            KV_LABEL: stats(ts_kv),
-            "per_lookup_us": {
-                "fromJSON": round(statistics.median(ts_fj) / WARM_KEYS * 1e6, 2),
-                KV_LABEL: round(statistics.median(ts_kv) / WARM_KEYS * 1e6, 2),
-            },
-        }
-
-        # ---- 4. floors ------------------------------------------------------
-        ts, _ = timeit(f'builtins.stringLength (builtins.readFile {J})', WARM_REPS)
-        r["floor_readfile_json_ms"] = stats(ts)
-        ts, _ = timeit(f'builtins.stringLength (builtins.readFile {N})', WARM_REPS)
-        r[f"floor_readfile_{EXT}_ms"] = stats(ts)
-        ts, out_ = timeit(
-            f'builtins.length (builtins.attrNames (builtins.fromJSON (builtins.readFile {J})))',
-            WARM_REPS,
-        )
-        assert all(int(o.strip()) == len(obj) for o in out_), "parse floor count mismatch"
-        r["floor_fromjson_parse_ms"] = stats(ts)
-
-        results[size] = r
-        print(f"== {size} done", flush=True)
-
-    out_path = OUT
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=1)
-    print(json.dumps(results, indent=1))
+    runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    qs = queries_for(JSON)
+    out = {"runs_per_config": runs, "n_queries": NS, "dataset": "large",
+           "note": "cold process per eval; ms = wall time of nix eval",
+           "configs": {}}
+    for n in NS:
+        cfg = f"large/n={n}"
+        exprs = {"fromJSON": expr_fromjson(qs[:n]),
+                 "nfk3": expr_nfk3(qs[:n])}
+        if n > 0:
+            exprs["nfk3s"] = expr_nfk3s(qs[:n])
+        res = {}
+        for m, e in exprs.items():
+            dts = []
+            outlen = 0
+            for _ in range(runs):
+                dt, outp = run_eval(e)
+                dts.append(dt)
+                outlen = len(outp)
+                assert outp.strip(), "empty output — result not forced?"
+            res[m] = {"ms_min": round(min(dts), 1),
+                      "ms_median": round(statistics.median(dts), 1),
+                      "ms_all": [round(x, 1) for x in dts],
+                      "out_bytes": outlen}
+        # harness invariant: every method answers the same queries
+        # (n=0 is a load-only point with different output by design)
+        if n > 0:
+            lens = {m: res[m]["out_bytes"] for m in res}
+            assert len(set(lens.values())) == 1, \
+                f"{cfg}: outputs differ: {lens}"
+        out["configs"][cfg] = res
+        print(cfg + ": " + "  ".join(
+            f"{m} min={res[m]['ms_min']} med={res[m]['ms_median']}"
+            for m in res), flush=True)
+    with open(os.path.join(HERE, "bench_results.json"), "w") as f:
+        json.dump(out, f, indent=2)
+    print("wrote bench_results.json")
 
 
 if __name__ == "__main__":

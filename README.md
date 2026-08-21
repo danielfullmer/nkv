@@ -1,24 +1,21 @@
 # fast-nix-lookup
 
-Fast key/value lookup for native Nix eval. Instead of `builtins.fromJSON` + attrset access (which parses the whole file on every `nix eval`), the database is precomputed into a file format that Nix can probe with byte reads, string slicing, and `hashString` — no parse.
-
-Five formats:
-
-- **NFK v1** (`kv.nix`, `.nfd`) — open-addressing hash table (sha256), 40-byte ASCII entries.
-- **NFK v2** (`kv2.nix`, `.nfd2`) — same scheme, dense 22-byte base-36 entries (load ≤ 0.8).
-- **NKB v1** (`kv_bin.nix`, `.nkb`) — sorted binary search, 24-byte base-255 ASCII entries (diffable).
-- **NKB v2** (`kv_bin2.nix`, `.nkb2`) — same sorted scheme, raw binary b254 index (14-byte entries), byte decode table carried in the file; smallest file of all.
-- **NFK v3** (`kv3.nix`, `.nfd3`) — NFK v2's hash + probe scheme on NKB v2's binary machinery: 15-byte b254 entries, 24-bit fingerprint, decode table carried in the file: 10% smaller than NFK v2, 7% larger than NKB v2; the fastest multi-lookup eval.
+Fast key/value lookup for native Nix eval. Instead of `builtins.fromJSON` + attrset access (which parses the whole file on every `nix eval`), the table is precomputed into an **NFK v3** file that Nix can probe with byte reads, string slicing, and `hashString` — no parse.
 
 ```nix
-let db = (import ./kv2.nix) ./data/large.nfd2;  # or kv.nix / data/large.nfd
+let db = (import ./kv3.nix) ./data/large.nfd3;
 in db.get "pkgs484.env795.nix877.pkgs793"
 # -> chde4cf665ukuewyy-tx
 ```
 
-(NFK v2 shown; v1, NKB v1, NKB v2, and NFK v3 are the same call with `kv.nix`/`.nfd`, `kv_bin.nix`/`.nkb`, `kv_bin2.nix`/`.nkb2`, and `kv3.nix`/`.nfd3`.)
+For very large tables, or evals that do only a few lookups, the same format can be sharded so a lookup reads one small shard file instead of the whole table (`kv3s.nix`):
 
-Same key, same value across all formats. For a 200,000-key table, one cold `nix eval` lookup takes ~60 ms with NKB v2 (60.0) or NFK v3 (60.2), ~80 ms with NKB v1 (79.8) or NFK v2 (81.1), and ~99 ms with NFK v1 (98.7), against ~210 ms for `builtins.fromJSON` + attrset access (2.1×–3.5×; see [REPORT.md](REPORT.md) for the full benchmark and trade-off analysis). For many lookups in one evaluation, NFK v3 leads (72.0 ms warm-200 vs 208.5 ms for `fromJSON`); above ~800 lookups/eval, NFK v2's 9.9 µs/lookup takes over.
+```nix
+let db = import ./kv3s.nix { digits = 2; dir = ./data/large_shards; };
+in db.get "pkgs484.env795.nix877.pkgs793"   # only the key's 1-of-256 shard is read
+```
+
+**Headline (one cold `nix eval` per point, median of 3):** on the 200,000-key table, a single lookup costs ~34 ms sharded / ~69 ms single-file NFK v3 vs ~217 ms for `builtins.fromJSON` (6.3× / 3.2×); sharding's ~34 ms is essentially the `nix eval` startup floor (~31 ms with no data work). On the nixpkgs-multiverse workload (31,904 attrs), NFK v3 beats `fromJSON` by 3.5–6.1× (single file) and 3.0–7.4× (sharded) at every query count; details in [REPORT.md](REPORT.md) and [`multiverse-faster/`](multiverse-faster/).
 
 ## Why not `builtins.fromJSON`?
 
@@ -28,195 +25,70 @@ A single lookup in the JSON version looks like:
 ( builtins.fromJSON (builtins.readFile "./large.json") )."some.key"
 ```
 
-That works — `builtins.fromJSON` returns an attrset of the same shape. The cost: the 14 MB file must be parsed (≈201 ms of `fromJSON` alone, ~209.8 ms total for one lookup on the 200k-key table) *every evaluation, even for a single key*. The custom formats read only the header, one table entry (hash) or ~⌈log₂ N⌉ entries (binary search), and one key/value pair — ~33–35 ms floor plus a few substring/hash operations, measured 60–105 ms wall per eval depending on format. See the [Performance summary](#performance-summary) for the full benchmark.
+That works — `builtins.fromJSON` returns an attrset of the same shape. The cost: the 13.9 MB file must be parsed on **every evaluation, even for a single key** (~215–230 ms wall per eval on the 200k-key table, essentially flat from 1 to 200 lookups). NFK v3 reads only the 64-byte header, one 15-byte index entry per probe step, and the one key/value pair it needs — ~31 ms startup floor plus a few substring/hash operations, measured 34–75 ms wall per eval depending on size and shard count. The lookup result is identical; the Nix-side correctness oracle (`test_correctness3.nix`) checks every key against `fromJSON`.
 
 ## Design constraints (this Nix)
 
-The target Nix is a stripped-down build: `builtins.parseInt` does not exist and there is no modulo operator; integer arithmetic is limited to `/` (truncating division), `builtins.div`, and `builtins.bitAnd`, and string primitives to `substring`, `stringLength`, `stringToChars`, `hashString`, `concatStringsSep`. The design works around this:
+The target is Nix 2.34.7 with a stripped-down builtin set. What is missing shapes the format:
 
-**Three lookup strategies** — both NFK and NKB are pure string/slice arithmetic over the file bytes, no allocation-heavy structures:
-
-- NFK v1/v2/v3 hash (one `sha256` per lookup; v3 uses NKB v2's binary index machinery with a 24-bit fingerprint);
-- NKB v1/v2 are hash-free (sorted keys, binary search).
-
-- **No `builtins.parseInt` / no `%`** — offsets and lengths are fixed-width numeric strings (decimal/hex/base-36/base-255/binary-b254 depending on format); decoding is a per-character table lookup or a small fold (`foldl` over an inline `digit → int` mapping, or the file-embedded 255-byte table for NKB v2 / NFK v3).
-- **No in-eval mutation** — the lookup builds one string (the value) from `substring` slices of the file; the index is walked by recursion/`fold` over integer positions, never by re-reading the file.
+- **No `builtins.parseInt` (and no `%`, no `builtins.mod`, no `builtins.hasSuffix`, no `or`)** — integer arithmetic is limited to `/` (truncating division), `builtins.div`, `builtins.bitAnd`; the design works around it with fixed-width fields decoded by table folds and power-of-two tables masked with `bitAnd`.
 - **Hash via `builtins.hashString "sha256"`** — stable across processes and platforms, so a fingerprint computed at build time matches at eval time.
-- **Binary-safe strings (NKB v2 / NFK v3)** — Nix I/O strings are arbitrary bytes minus NUL; only string *literals in source* are UTF-8-decoded. Raw bytes in a `readFile`-loaded file pass through `substring`, `stringLength`, and the `sha256` digest untouched (verified on Nix 2.34.7, which this project targets). The builders therefore refuse NUL, and the index region of the binary formats is not human-diffable (the data region is unchanged).
-
-## File format: NFK v1 (ASCII hash index)
-
-Header and index are plain ASCII (fixed-width zero-padded decimal/hex fields); the data region is raw UTF-8. Three regions:
-
-```
-offset 0                        header, 64 bytes
-offset 64                       index region, M × 40 bytes
-offset 64 + M·40                data region, variable
-```
-
-**Header (64 bytes)** — fixed-width ASCII fields:
-
-| field     | offset | width | meaning                                        |
-|-----------|-------:|------:|------------------------------------------------|
-| magic     | 0      | 4     | `NFK1`                                         |
-| version   | 4      | 2     | `01`                                           |
-| algo      | 6      | 2     | `sh` (sha256)                                  |
-| `M`       | 8      | 10    | table size, zero-padded decimal (power of two) |
-| `N`       | 18     | 10    | entry count, zero-padded decimal               |
-| —         | 28     | 36    | reserved (spaces)                              |
-
-**Index region** — one 40-byte entry per table slot `s` at offset `64 + 40·s`:
-
-| field    | offset | width | meaning                                                    |
-|----------|-------:|------:|------------------------------------------------------------|
-| `fp`     | 0      | 16    | first 16 hex chars of `sha256(key)`; `g`×16 if unused      |
-| `keyOff` | 16     | 10    | byte offset of the key in the data region (zero-padded decimal) |
-| `keyLen` | 26     | 6     | byte length of the key (zero-padded decimal)               |
-| `valLen` | 32     | 8     | byte length of the value (zero-padded decimal)             |
-
-The value offset is not stored: the value is at `keyOff + keyLen`.
-
-**Data region** — per entry, the key bytes immediately followed by the value bytes, in insertion order.
-
-Invariants:
-
-- `M = next_pow2(max(16, F·N))` with `F = --m-factor` (integer, default 2) → load ≤ 0.5 by default; probe walk bounded by `M` slots.
-- `s0 = int(h[56:64], 16) AND (M − 1)` (low 32 bits of the digest); linear probing with +1 (mod `M`).
-- The fingerprint is 64 bits; `g`×16 marks an unused slot (a hex digest never contains `g`). A fingerprint match is confirmed by a byte-for-byte key compare, so a collision costs one extra probe — never a wrong value.
-- All header/index fields are ASCII digits/hex, so the regions are human-readable and diffable.
-- Width guards (builder-enforced): `keyOff` < 10¹⁰, `keyLen` < 10⁶, `valLen` < 10⁸.
-
-## File format: NFK v2 (dense ASCII hash index)
-
-Same open-addressing scheme as NFK v1, with the index densified from 40-byte to 22-byte base-36 entries and the load factor raised from ≤ 0.5 to ≤ 0.8. The large file drops from 33.3 MB to 18.1 MB (1.84× smaller); the index from 21 MB to 5.77 MB.
-
-```
-offset 0                        header, 64 bytes
-offset 64                       index region, M × 22 bytes
-offset 64 + M·22                data region, variable (same as v1)
-```
-
-**Header (64 bytes)** — fixed-width ASCII fields:
-
-| field     | offset | width | meaning                                        |
-|-----------|-------:|------:|------------------------------------------------|
-| magic     | 0      | 4     | `NFK2`                                         |
-| version   | 4      | 2     | `02`                                           |
-| algo      | 6      | 2     | `sh` (sha256)                                  |
-| `M`       | 8      | 10    | table size, zero-padded decimal (power of two) |
-| `N`       | 18     | 10    | entry count, zero-padded decimal               |
-| —         | 28     | 36    | reserved (spaces)                              |
-
-**Index region** — one 22-byte entry per table slot `s` at offset `64 + 22·s`:
-
-| field    | offset | width | meaning                                                   |
-|----------|-------:|------:|-----------------------------------------------------------|
-| `fp`     | 0      | 8     | first 8 hex chars of `sha256(key)` (32-bit); `g`×8 if unused |
-| `keyOff` | 8      | 6     | byte offset of the key in the data region (base-36, big-endian) |
-| `keyLen` | 14     | 4     | byte length of the key (base-36)                          |
-| `valLen` | 18     | 4     | byte length of the value (base-36)                        |
-
-The value offset is not stored: the value is at `keyOff + keyLen`.
-
-Invariants:
-
-- `M = next_pow2(max(16, ⌈F·N⌉))` with `F = --m-factor` (default 1.25) → load ≤ 0.8; probe walk bounded by `M` slots.
-- Base-36 width guards (builder-enforced): `keyOff` < 36⁶ ≈ 2.18 GB; `keyLen`/`valLen` < 36⁴ ≈ 1.68 MB; `M`, `N` < 10¹⁰ (10-digit decimal header fields).
-- Fingerprint is 32-bit: ~N²/2³³ expected colliding pairs; a false match costs one extra key compare, never a wrong value (the key string is always verified byte-for-byte).
-- All fields are ASCII (digits + `a–z`), so the index stays diffable.
-
-## File format: NKB v1 (ASCII binary-search index)
-
-No hashing at all: keys are sorted bytewise, and lookup is a binary search over the index. The index is pure ASCII — base-255 digits, little-endian, each digit encoded as 2 chars over the alphabet `abcdefghijklmnopqrstuvwxyz234567` (digit = hi·32 + lo, so the high char is always `a`–`h` and digit values are 0–254) — so it stays diffable; the data region is raw UTF-8.
-
-```
-offset 0                        header, 64 bytes
-offset 64                       key-index region, N × 24 bytes
-offset 64 + N·24                data region (sorted, variable)
-```
-
-**Header (64 bytes)** — magic `NKB1` [0..4), `N` (4 base-255 digits, 8 chars) [4..12), `keyTotal` (4 digits, 8 chars) [12..20), `valTotal` (4 digits, 8 chars) [20..28), spaces [28..64).
-
-**Key-index region** — one 24-byte entry per *entry* (not per slot) at offset `64 + 24·i`, for sorted position `i`:
-
-| field    | offset | width | meaning                                     |
-|----------|-------:|------:|---------------------------------------------|
-| `keyOff` | 0      | 8     | file offset of the key (4 base-255 digits)  |
-| `keyLen` | 8      | 4     | key length (2 base-255 digits)              |
-| `valOff` | 12     | 8     | file offset of the value (4 base-255 digits) |
-| `valLen` | 20     | 4     | value length (2 base-255 digits)            |
-
-**Data region** — all keys concatenated in sorted order, then all values concatenated in the same order; all index offsets are absolute file offsets.
-
-Invariants:
-
-- Keys are unique and sorted bytewise (Python `sorted` on the raw byte strings); the binary search compares `substring` slices directly.
-- Base-255 width limits (builder-enforced): `N`/`keyTotal`/`valTotal`/`keyOff`/`valOff` < 255⁴ (≈ 4.2 GB); `keyLen`/`valLen` < 255² ≈ 65 KB (2-digit fields).
-- No hash, no collisions, no probe chains — worst case is exactly ⌈log₂ N⌉ key reads.
-
-## File format: NKB v2 (binary b254 index)
-
-Same sorted scheme and same layout as NKB v1, with the index region encoded as raw binary b254 digits (`digit = byte − 1`, i.e. bytes `0x01`–`0xFF`) instead of ASCII, and a 255-byte `byte → int` decode table embedded in the file. Entry size drops from 24 to 14 bytes; the large file drops from 17.1 MB to 15.1 MB (1.09× the JSON).
-
-```
-offset 0                      header, 64 bytes
-offset 64                     byte table T: 0x01 … 0xFF (255 bytes)
-offset 319                    key-index region, N × 14 bytes
-offset 319 + N·14             data region (sorted, variable — same as NKB v1)
-```
-
-**Header (64 bytes)** — magic `NKB2` [0..4), `N` (3 b254 bytes) [4..7), `keyTotal` (3 b254 bytes) [7..10), `valTotal` (3 b254 bytes) [10..13), spaces [13..64). No data-offset field: the data region is at `319 + N·14`.
-
-**Index region** — one 14-byte entry per entry at offset `319 + 14·i`, for sorted position `i`:
-
-| field    | offset | width | meaning                          |
-|----------|-------:|------:|----------------------------------|
-| `keyOff` | 0      | 4     | file offset of the key (b254)    |
-| `keyLen` | 4      | 3     | key length (b254)                |
-| `valOff` | 7      | 4     | file offset of the value (b254)  |
-| `valLen` | 11     | 3     | value length (b254)              |
-
-Invariants:
-
-- b254 width limits (builder-enforced): `N`/`keyTotal`/`valTotal`/`keyLen`/`valLen` < 254³ (≈ 16.4 MB); `keyOff`/`valOff` — and hence the file size — < 254⁴ (≈ 4.16 GB).
-- The byte table `T` maps each byte `0x01`–`0xFF` to its own single-byte encoding; Nix-side field decode is `fold` over `substring` slices table lookups (`T.byte → int`) — no `builtins.parseInt` (see [Nix-side workarounds](#nix-side-workarounds)).
-- Keys stay sorted bytewise; worst case is still ⌈log₂ N⌉ key reads.
-- The index region and byte table are raw binary (not diffable); the data region (keys block + values block) is raw UTF-8.
+- **Binary-safe strings** — Nix I/O strings are arbitrary bytes minus NUL; only string *literals in source* are UTF-8-decoded. Raw bytes from `readFile` pass through `substring`, `stringLength`, and `sha256` untouched (verified on 2.34.7). The builder therefore refuses NUL, and every file byte is in `0x01`–`0xFF`.
+- **One source-literal gotcha** — the lexer normalizes a raw `0x0D` byte in `.nix` *source* to `0x0A` (verified byte-for-byte). Raw-bytes data files are unaffected (`readFile` output is raw), but any table material emitted into Nix source must escape `0x0D` as `\r` — which is exactly how the generated decode table (below) is written.
+- **No in-eval mutation** — the lookup builds one string (the value) from `substring` slices of the file; the index is walked by recursion over integer positions, never by re-reading the file.
 
 ## File format: NFK v3 (binary hash index)
 
-NFK v3 combines NFK v2's hash + probe scheme with NKB v2's binary machinery: the same sha256 fingerprint and linear probing, but NKB v2's b254 fields and file-carried byte table, plus a compact 24-bit fingerprint. The data region interleaves key and value bytes (each value immediately follows its key), so only the key offset is stored per entry:
+Open addressing: one `sha256` per lookup, a 24-bit fingerprint, and linear probing over a power-of-two table at load ≤ 0.8. Numeric fields are 3–4 **b254** bytes (one byte per digit, `byte = digit + 1`, big-endian digits), so every file byte is `0x01`–`0xFF` and the file never contains the one byte Nix's `readFile` rejects.
 
 ```
-offset 0                      header, 64 bytes
-offset 64                     byte table T: 0x01 … 0xFF (255 bytes)
-offset 319                    index region, M × 15 bytes
-offset 319 + M·15             data region (interleaved, variable)
+offset 0              header, 64 bytes
+offset 64             index region, M × 15 bytes
+offset 64 + M·15      data region (interleaved, variable)
 ```
 
-**Header (64 bytes)** — magic `NFK3` [0..4), `N` (3 b254 bytes) [4..7), `M` (4 b254 bytes) [7..11), `keyTotal` (3 b254 bytes) [11..14), `valTotal` (3 b254 bytes) [14..17), spaces [17..64).
+**Header (64 bytes):**
 
-**Index region** — one 15-byte entry per table slot `s` at offset `319 + 15·s`:
+| field      | offset | width | meaning                                          |
+|------------|-------:|------:|--------------------------------------------------|
+| magic      | 0      | 4     | `NFK3`                                           |
+| `N`        | 4      | 3     | entry count (b254)                               |
+| `M`        | 7      | 4     | table size, power of two (b254)                  |
+| `keyTotal` | 11     | 3     | total key bytes (b254)                           |
+| `valTotal` | 14     | 3     | total value bytes (b254)                         |
+| revision   | 17     | 1     | `1` (0x31) — no table in file                    |
+| —          | 18     | 46    | reserved (spaces)                                |
 
-| field    | offset | width | meaning                                                |
-|----------|-------:|------:|--------------------------------------------------------|
+**Index region** — one 15-byte entry per table slot `s` at offset `64 + 15·s`:
+
+| field    | offset | width | meaning                                             |
+|----------|-------:|------:|-----------------------------------------------------|
 | `fp`     | 0      | 4     | `int(sha256(key) hex [0:6], 16) + 1` (24-bit); 0 = unused |
-| `keyOff` | 4      | 4     | absolute file offset of the key                        |
-| `keyLen` | 8      | 3     | key length                                             |
-| `valLen` | 11     | 3     | value length (the value is at `keyOff + keyLen`)       |
-| —        | 14     | 1     | padding (unused slots are 15 bytes of `0x01`)          |
+| `keyOff` | 4      | 4     | absolute file offset of the key                     |
+| `keyLen` | 8      | 3     | key length                                          |
+| `valLen` | 11     | 3     | value length (the value is at `keyOff + keyLen`)    |
+
+An unused slot is 15 bytes of `0x01` (all fields zero). The data region interleaves key and value bytes in JSON insertion order, so only the key offset is stored per entry.
+
+**Decode table — static, not in the file.** The b254 alphabet (255 bytes `0x01`–`0xFF` → digits 0–254) is a format constant shared by every NFK v3 file, so it is stored in exactly one place: `nfd3-table.nix`, a 255-entry attrset (`byte 1-char string → digit`) generated by
+
+```sh
+python3 build_db3.py --write-table nfd3-table.nix
+```
+
+`kv3.nix` imports it once per eval (the Nix import cache makes repeat imports free), so the table costs nothing per lookup and no per-file 255 bytes. The file is generated, not hand-edited; it intentionally contains raw non-UTF-8 bytes (Nix accepts them in string literals) with only the four literal-breaking bytes escaped (`0x0A → \n`, `0x0D → \r`, `0x22 → \"`, `0x5C → \\`).
 
 Invariants:
 
-- `s0 = int(h[56:64], 16) AND (M − 1)`, linear probing, bounded by `M` steps (same as NFK v2); a fingerprint hit is confirmed by a byte-for-byte key compare, so a 24-bit collision (expected ≈0.012 per lookup at 200k keys) costs one extra key read — never a wrong value.
+- `s0 = int(h[56:64], 16) AND (M − 1)`; linear probing, bounded by `M` steps. A fingerprint hit is confirmed by a byte-for-byte key compare, so a 24-bit collision (expected ≈ N²/2²⁴ false pairs ≈ 2 at 200k keys) costs one extra key read — never a wrong value.
 - `M = next_pow2(max(16, ⌈1.25·N⌉))` → load ≤ 0.8 (fixed; no factor flag).
-- b254 width limits (builder-enforced): N / `keyTotal` / `valTotal` / key length / value length < 254³ (~16.4 MB); `M` and offsets < 254⁴ (~4.16 GB); no NUL.
-- Sizes (200k keys): 16,273,835 bytes = 1.17× the JSON (vs 18.1 MB / 1.30× for NFK v2, 15.1 MB / 1.09× for NKB v2).
-- Values are opaque: any UTF-8 minus NUL may be stored. When a value holds a JSON document, `getJson`/`getOrJson` decode it with `builtins.fromJSON` at lookup time — the file format is unchanged (byte-identical to str mode).
+- b254 width limits (builder-enforced): `N` / `keyTotal` / `valTotal` / key length / value length < 254³ (~16.4 MB); `M` and offsets < 254⁴ (~4.16 GB); no NUL.
+- Sizes: 1,005 keys → 91,278 B; 50,000 → 4,046,342 B; 200,000 → 16,273,580 B = 1.17× the 13.9 MB JSON.
+- Values are opaque: any UTF-8 minus NUL may be stored. String values are returned as-is by `get`; when a value holds a JSON document, `getJson`/`getOrJson` decode it with `builtins.fromJSON` at lookup time (a miss is still `null`).
 
 ### Optional file sharding
 
-For very large tables, or for evals that do only a few lookups, `build_db3.py` can split the table into a directory of independent NFK v3 files, one per slice of the key hash:
+For very large tables, or evals that do only a few lookups, `build_db3.py` can split the table into a directory of independent NFK v3 files, one per slice of the key hash:
 
 ```sh
 python3 build_db3.py INPUT.json --shards 256 --prefix sharded/ --check
@@ -225,220 +97,144 @@ python3 build_db3.py INPUT.json --shards 256 --prefix sharded/ --check
 - Shard of key `k` = `sharded/<h[24:24+d]>.nfd3`, where `h` is the lowercase hex of `sha256(k)` and `d` is the number of digits: `--shards 16/256/4096` → `d = 1/2/3`.
 - **Every shard file is always written** — an empty shard is a valid NFK v3 file with `N = 0`, `M = 16` — so a key always resolves to an existing file.
 - The slice `[24:24+d)` is disjoint from the fingerprint slice `[0:6)` and the probe-seed slice `[56:64)` the probing algorithm uses, so sharding does not perturb probe distribution; each shard is a standalone NFK v3 table with its own `M`.
-- Reader: `kv3s.nix` (see Usage) — per lookup only the shard the key hashes to is read; Nix's import cache keeps it for the rest of the eval. Every NFK v3 file carries the identical 255-byte decode table at offset 64, so `kv3s.nix` builds it **once per eval** (sourcing the bytes from the all-zero shard, which the builder always writes) and passes it into each shard import via `kv3.nix`'s `{ file, table }` call form — a shard import then costs only the readFile + header asserts (~0.2 ms measured). `kv3.nix`'s `db` argument also accepts a plain path (string or path value), in which case it folds the table itself.
+- Reader: `kv3s.nix` — per lookup only the shard the key hashes to is read, and Nix's import cache keeps it for the rest of the eval. The static decode table is shared automatically: `kv3.nix`'s single `import ./nfd3-table.nix` is evaluated once per process no matter how many shard files are imported.
 - `--check` in sharded mode re-derives shard membership from the input keys and re-probes every key through the shard files.
 
-## Lookup algorithm (NKB)
+## Lookup algorithm
 
 ```
 lookup(key):
-  lo, hi = 0, N            # half-open range [lo, hi); N = db.count
-  while lo < hi:
-    mid = (lo + hi) / 2    # integer division, truncates
-    midKey = substring(file, keyOff[mid], keyLen[mid])
-    if   key = midKey: return substring(file, valOff[mid], valLen[mid])
-    elif key < midKey: hi = mid
-    else: lo = mid + 1
-  return null
+  h  = sha256(key) in lowercase hex
+  fp = int(h[0:6], 16) + 1              # 24-bit fingerprint
+  s  = int(h[56:64], 16) AND (M - 1)    # initial slot
+  for i in 0..M:                        # bounded walk
+    e    = 64 + 15 * (s + i) AND (M - 1)  # (bitAnd wrap, M a power of two)
+    efp  = b254-decode(entry[e .. e+4])  # 4 static-table lookups
+    if efp = 0: return null              # unused slot: key absent
+    if efp ≠ fp: continue                # fingerprint miss: probe on
+    k    = substring(raw, keyOff, keyLen)
+    if k = key: return substring(raw, keyOff + keyLen, valLen)
+  unreachable (load < 1 guarantees an unused slot)
 ```
 
-- Each step: decode the key offset and length (b254 for NKB v2; base-255 for NKB v1), one `substring` read of the key, one string compare.
-- ⌈log₂ N⌉ steps: 10 for N = 1005, 16 for N = 50,000, 18 for N = 200,000.
-- Comparison is lexicographic on the raw byte strings, which matches the bytewise sort used by the builder (Python `sorted` on bytes).
+- Per probe step: 4–3 table lookups (fingerprint, offsets, lengths) via the static decode attrset, one `substring` key read, one string compare.
+- One `sha256` per lookup; expected ~1–2 probe steps at load 0.8.
+- The fingerprint is compared as an int and every hit is confirmed byte-for-byte, so the 24-bit fingerprint can only add a key read, never a wrong value.
 
 ## Nix-side workarounds
 
-- **No `builtins.parseInt`** — every numeric field decodes via a table fold: NFK v1/v2 header `M`/`N` via a base-100 fold over 2-digit chunks (inline `d2` table); NFK v2 index fields via a base-36 single-char fold (generated `b36` table); NKB v1 via an inline `b2` table mapping 2-char pairs to base-255 digits (little-endian); NKB v2 / NFK v3 one byte at a time through the file-embedded `byte → int` table (3–4 lookups per field, plus a 6-char hex fold for the NFK v3 24-bit fingerprint).
-- **No `%`** — there is no modulo operator, but Nix integer division (`/`, `builtins.div`) and `builtins.bitAnd` are available. The NKB midpoint is plain `(lo + hi) / 2` (truncates); NFK v1/v2 derive the initial slot by folding the last 8 hex chars of the digest (base 16) and masking with `builtins.bitAnd v32 (M − 1)`; probe wrap is `builtins.bitAnd (s + 1) (M − 1)` (M is a power of two).
-- **Hash** — `builtins.hashString "sha256" key` returns the hex digest; `substring 0 16` (v1) / `substring 0 8` (v2) gives the fingerprint; the slot uses the last 8 hex chars (low 32 bits of the digest), `substring 56 8`.
+- **No `builtins.parseInt`** — every b254 field decodes one byte at a time through the static `nfd3-table.nix` attrset (3–4 lookups per field: `acc * 254 + table."${substring p 1 raw}"`); the 24-bit fingerprint and the probe seed fold the 6/8 hex chars of the digest through a 16-entry inline table (no `%`, just `* 16 +` and a final `bitAnd` mask).
+- **No `%`** — probe wrap is `builtins.bitAnd (s + i) (M - 1)` (M is a power of two); the midpoint-free design (hash probing, no binary search) means no other modulo is needed.
+- **No `or`** — the modules use `if x == null then a else b` and plain booleans throughout.
 - **No mutation** — everything is a pure `let`/recursion over the file string; the only "state" is integer positions.
-- **Binary-safe b254 decoding (NKB v2 / NFK v3)** — no `builtins.parseInt` and no integer arithmetic on bytes, so each b254 field decodes one byte at a time through the file-carried `byte → int` table (255 one-byte entries embedded after the header): `intOf byte = table.substring(0,1)` folded left-to-right as `acc * 254 + (intOf byte)`. 3–4 table lookups per field; the table is folded once at import.
+- **Binary-safe b254 decoding** — raw `readFile` bytes pass through `substring` untouched; the decode table (an attrset in source) is the only place where bytes meet the lexer, and it escapes the four literal-breaking bytes (see the format section).
 
-Header fields are decoded once at import time (NFK v1/v2: `M`/`N`; NKB v1/v2: `N` and the region totals); NKB v2 and NFK v3 additionally fold their 255-entry byte tables at import. NFK lookups then do one `hashString` and a few `substring`s per probe step, NKB lookups ~log₂(N) key reads.
+Header fields and the table import happen once at import time; each lookup then costs one `hashString`, one 6-char and one 8-char hex fold, and a few `substring`s per probe step.
 
 ## Builder
 
-`build_db.py` (NFK v1), `build_db2.py` (NFK v2), `build_db_bin.py` (NKB v1), `build_db_bin2.py` (NKB v2), and `build_db3.py` (NFK v3) read the JSON object and emit the binary/ASCII file. `build_db.py` additionally runs an independent re-parse (`--check`) that validates the header, re-probes every key through a from-scratch decoder, and confirms misses return `None` — so the builder and the Nix module are cross-validated at build time.
+`build_db3.py` reads a JSON object and emits NFK v3 files (single file or sharded), with an independent re-parser and `--check`:
 
-`build_db2.py` (NFK v2) takes `--m-factor F` (default 1.25): `M = next_pow2(max(16, ceil(F·N)))`, and `--check` (same independent re-parse + probe of every key + a known miss). Width guards: `keyOff` < 36⁶ ≈ 2.18 GB, key/value lengths < 36⁴ ≈ 1.68 MB, `M`/`N` < 10¹⁰.
+```sh
+python3 build_db3.py INPUT.json OUTPUT.nfd3 [--check]
+python3 build_db3.py INPUT.json --shards {16,256,4096} --prefix DIR/ [--check]
+python3 build_db3.py --write-table nfd3-table.nix
+```
 
-`build_db_bin.py` (NKB v1) sorts keys bytewise, writes the header + 24-byte base-255 index + sorted data region, and with `--check` re-parses the file independently (validating magic, no-NUL, exact size) and binary-searches every key plus a known miss.
+- Input: a JSON object with string keys and **arbitrary JSON values** — string values are stored raw; non-string values are stored as compact JSON documents, which `getJson`/`getOrJson` decode back.
+- Sharded mode writes `DIR/<h[24:24+d]>.nfd3` for every shard, including empty ones (see the sharding subsection); single-file mode is unchanged.
+- `--check` re-parses the file(s) independently — validates magic, revision byte, reserved header spaces, absence of NUL, and the exact file size — and re-probes every key through an independent Python probe plus a known miss. In sharded mode, shard membership is re-derived and every key is re-probed through the shard files.
+- Width guards: `N` / totals / lengths < 254³ bytes, `M` / offsets < 254⁴, no NUL.
+- Single-file output is byte-identical across rebuilds (no timestamps, insertion-order data region).
 
-`build_db_bin2.py` (NKB v2) is the same pipeline with the 14-byte b254 index and the embedded 255-byte table, plus width guards (b254): `N`/`keyTotal`/`valTotal`/lengths < 254³ ≈ 16.4 MB, `keyOff`/`valOff`/file size < 254⁴ ≈ 4.16 GB, no NUL (Nix `readFile` strings cannot carry NUL).
-
-The NFK v3 builder (`build_db3.py`) uses NFK v2's slot assignment and a 24-bit sha256 fingerprint, NKB v2's b254 fields, embeds the 255-byte table after the 64-byte header, and enforces the width limits (N/totals/lengths < 254³, M/offsets < 254⁴). `M = next_pow2(max(16, ⌈1.25·N⌉))` is fixed (load ≤ 0.8); there is no factor flag. Its `--check` re-parses the file independently (validates magic, reserved header spaces, the embedded 255-byte table, absence of NUL, and the exact file size) and probes every key through an independent in-memory probe plus a known miss.
+`gen_data.py` generates the deterministic test datasets (1k / 50k / 200k keys, seeded RNG).
 
 ## Usage
 
-Nix 2.34.7+ (uses `hashString` and byte-safe `substring`; no `builtins.parseInt`). Import one of the kv modules with the path to a database file:
-
-```nix
-let db = (import ./kv.nix) ./data/large.nfd;
-in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
-```
-
-`get` returns `null` on a miss. `kv2.nix` (NFK v2) has the same API and asserts the `NFK2` magic:
-
-```nix
-let db = (import ./kv2.nix) ./data/large.nfd2;
-in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
-```
-
-NFK v3 (`kv3.nix`) has the same API — plus `getJson`/`getOrJson` for JSON values — and asserts the `NFK3` magic:
+Nix 2.34.7+ (uses `hashString` and byte-safe `substring`; no `builtins.parseInt`).
 
 ```nix
 let db = (import ./kv3.nix) ./data/large.nfd3;
 in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
 ```
-Values are opaque; when a value holds a JSON document, `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string (a miss still returns `null`).
 
-Sharded NFK v3 (`kv3s.nix`) takes a directory built with `--shards` (`digits` must match the shard count) and the same API:
+`get` returns `null` on a miss. `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string when the value holds a JSON document (a miss still returns `null`). The module asserts the `NFK3` magic, the revision byte, and the exact file size at import.
+
+Sharded NFK v3 (`kv3s.nix`) takes a directory built with `--shards` (`digits` must match the shard count):
 
 ```nix
-let db = import ./kv3s.nix { digits = 2; dir = ./sharded; };
+let db = import ./kv3s.nix { digits = 2; dir = ./data/large_shards; };
 in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.getJson "k"; db.count }
 ```
 
 Importing the module is lazy — no shard file is read until a lookup is forced. Per lookup only the key's shard is read. `db.count` imports every shard file — offline / inspection use only.
 
-NKB (`kv_bin.nix`) has the same API (minus `tableSize`, which is the hash-table size and does not apply to a sorted index):
-
-```nix
-let db = (import ./kv_bin.nix) ./data/large.nkb;
-in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count }
-```
-
-`kv_bin2.nix` (NKB v2) has the same API and asserts the `NKB2` magic:
-
-```nix
-let db = (import ./kv_bin2.nix) ./data/large.nkb2;
-in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count }
-```
-
-### Building a database
-
-The NFK v1 builder:
-
-```sh
-python3 build_db.py INPUT.json OUTPUT.nfd [--m-factor F] [--check]
-```
-
-- Input: a JSON object with string keys and string values.
-- `--m-factor` (integer, default 2): `M = next_pow2(max(16, F·N))`; the default keeps load ≤ 0.5 for short probe chains.
-- `--check`: after writing, re-reads the file with an independent parser and re-probes every key (exits non-zero on mismatch).
-
-The NFK v2 builder:
-
-```sh
-python3 build_db2.py INPUT.json OUTPUT.nfd2 [--m-factor F] [--check]
-```
-
-- Same input contract; `--m-factor` (default 1.25) as above.
-- `--check`: independent re-parse + probe of every key plus a known miss.
-- Width guards: `keyOff` < 36⁶ ≈ 2.18 GB, key/value lengths < 36⁴ ≈ 1.68 MB, `M`/`N` < 10¹⁰.
-
-The NKB v1 builder:
-
-```sh
-python3 build_db_bin.py INPUT.json OUTPUT.nkb [--check]
-```
-
-- Same input contract; keys are sorted bytewise internally (input order is irrelevant).
-- `--check`: independent re-parse (magic, no-NUL, exact size) + binary-search of every key plus a known miss.
-
-The NKB v2 builder:
-
-```sh
-python3 build_db_bin2.py INPUT.json OUTPUT.nkb2 [--check]
-```
-
-- Same input contract; keys are sorted bytewise internally (input order is irrelevant).
-- `--check`: independent re-parse (validates magic, the embedded 255-byte table, absence of NUL, and exact size) + binary-search of every key plus a known miss.
-- Width guards (b254): `N`/`keyTotal`/`valTotal`/lengths < 254³ ≈ 16.4 MB, `keyOff`/`valOff`/file size < 254⁴ ≈ 4.16 GB, no NUL.
-
-The NFK v3 builder (single file or sharded):
-
-```sh
-python3 build_db3.py INPUT.json OUTPUT.nfd3 [--check]
-python3 build_db3.py INPUT.json --shards {16,256,4096} --prefix DIR/ [--check]
-```
-
-- Input: a JSON object with string keys and **arbitrary JSON values** — string values are stored raw; non-string values are stored as compact JSON documents, which `getJson`/`getOrJson` decode (all other builders require string values).
-- Sharded mode writes `DIR/<h[24:24+d]>.nfd3` for every shard, including empty ones (see the sharding subsection under the NFK v3 format); single-file mode is unchanged.
-- `--check`: independent re-parse (validates magic, reserved header spaces, the embedded 255-byte table, absence of NUL, and the exact file size) + probe of every key plus a known miss; in sharded mode, shard membership is re-derived and every key is re-probed through the shard files.
-- Width guards: N/total/length < 254³ bytes, M/offsets < 254⁴, no NUL.
-
 ## Correctness
 
-Each format is cross-checked against the `fromJSON` oracle in `test_correctness*.nix`:
+Each dataset is cross-checked against the `fromJSON` oracle in `test_correctness3.nix` (every key, plus a known miss, plus `count`/`tableSize`):
 
 ```sh
 python3 gen_data.py
+python3 build_db3.py --write-table nfd3-table.nix
 for s in small medium large; do
-  python3 build_db.py      data/$s.json data/$s.nfd  --check
-  python3 build_db2.py     data/$s.json data/$s.nfd2 --check
-  python3 build_db3.py     data/$s.json data/$s.nfd3 --check
-  python3 build_db_bin.py  data/$s.json data/$s.nkb  --check
-  python3 build_db_bin2.py data/$s.json data/$s.nkb2 --check
+  python3 build_db3.py data/$s.json data/$s.nfd3 --check
+  nix eval --impure --json --expr '(import ./test_correctness3.nix) "$s"'
 done
-# then, per dataset:
-nix eval --impure --expr '(import ./test_correctness.nix) "large"'
-nix eval --impure --expr '(import ./test_correctness2.nix) "large"'
-nix eval --impure --expr '(import ./test_correctness3.nix) "large"'
-nix eval --impure --expr '(import ./test_correctness_bin.nix) "large"'
-nix eval --impure --expr '(import ./test_correctness_bin2.nix) "large"'
 ```
 
-Expected: `ok = true`, `mismatchCount = 0` on all datasets (1,255,025 lookups across the five formats).
+Expected: `ok = true`, `mismatchCount = 0` on all three datasets (251,005 oracle lookups total). The builder's own `--check` independently re-probes every key at build time.
 
-The multiverse sharded indexes (256 shards each) are also checked against the `fromJSON` oracle in `multiverse-faster/test_correctness_shards.nix`: `mismatches = 0`, misses → `null`, `count = 31904` for both.
-
+Sharded correctness: `python3 build_db3.py data/large.json --shards 256 --prefix data/large_shards/ --check` (and 16/4096-shard regression runs) re-derive shard membership and re-probe all 200,000 keys through the shard files (0 mismatches, miss → `None`). The multiverse sharded indexes (256 shards each) are checked against `fromJSON` in `multiverse-faster/test_correctness_shards.nix`: `mismatches = 0`, misses → `null`, `count = 31904` for both datasets.
 
 ## Performance summary
 
-Benchmarked on the 200k-key table (14 MB JSON) with 15 cold `nix eval` runs per point, same session for all five custom formats (median; per-format harness in `bench.py` / `bench_marginal.py`, `fromJSON` via the same harness — see [REPORT.md](REPORT.md)):
+One cold `nix eval` per point (median of 3), all methods in the same session; harness in `bench.py`, raw results in `bench_results.json`. The n=0 point for `fromJSON` on the 200k table additionally forces all key names (a count), so it overstates plain parse cost; n=0 for the multiverse tables reads one field.
 
-| workload | NFK v1 (hash) | NFK v2 (dense) | NKB v1 (sorted) | NKB v2 (binary) | NFK v3 (hybrid) | fromJSON |
-|---|---|---|---|---|---|---|
-| Cold single `nix eval` lookup, 200k keys | 98.7 ms (2.13×) | 81.1 ms (2.59×) | 79.8 ms (2.63×) | **60.0 ms** (3.50×) | 60.2 ms (3.49×) | 209.8 ms |
-| Cold single lookup, 50k keys | 46.3 ms (1.69×) | 41.8 ms (1.88×) | 41.6 ms (1.88×) | 40.4 ms (1.94×) | **39.8 ms** (1.97×) | 78.4 ms |
-| Cold single lookup, 1k keys | 34.0 ms | 33.8 ms | 33.6 ms | 34.2 ms | 34.3 ms | 33.7 ms (parity — startup-bound) |
-| 200 lookups in one eval, 200k keys | 105.4 ms (1.98×) | 82.1 ms (2.54×) | 97.1 ms (2.15×) | 84.9 ms (2.46×) | **72.0 ms** (2.90×) | 208.5 ms |
-| Marginal in-process cost per lookup | ~0–17 µs (noise-limited) | **9.9 µs** (10–16 µs across sizes) | 46–91 µs (≤ 18 steps) | 54–96 µs (≤ 18 steps) | 4–31 µs (slope grows with size) | < 1 µs (attrset) |
-| DB file size, 200k keys | 33.3 MB (2.40× JSON) | 18.1 MB (1.30× JSON) | 17.1 MB (1.23× JSON) | **15.1 MB** (1.09× JSON) | 16.3 MB (1.17× JSON) | 13.9 MB |
-| `readFile` floor, 200k keys | 97.2 ms | 77.1 ms | 79.6 ms | **57.3 ms** | 60.4 ms | 57.8 ms read + 201 ms parse (259.0 ms total) |
+**Parent, large (200,000 keys; 13.9 MB JSON / 16.3 MB `.nfd3`; 256 shards of 57–85 KB):**
 
-All five custom formats beat `fromJSON` cold at realistic eval sizes (1.69×–3.50× at 50k–200k keys): NKB v2 and NFK v3 split the cold-lookup lead by 0.2 ms (readFile floor 57.3 vs 60.4 ms), NFK v3 wins the warm multi-lookup eval (72.0 ms warm-200 vs 82.1 NFK v2, 84.9 NKB v2, 97.1 NKB v1, 105.4 NFK v1), and NFK v2's 9.9 µs/lookup takes over above ~800 lookups/eval. Bulk scans (thousands of lookups per eval) tip back to `fromJSON`'s sub-µs attrset. Full cost model, crossovers, and trade-offs: [REPORT.md](REPORT.md). Sharding (NFK v3 only, `kv3s.nix`): on the multiverse workload, reading a 256-shard directory instead of the whole table drops the single-lookup intercept from 43–48 ms to ≈34 ms (≈ the ~32–35 ms eval startup floor) and stays ahead of the single-file table up to ~100 lookups/eval — `kv3s.nix` builds the 255-byte decode table once per eval and shares it into every shard import (kv3.nix's `{ file, table }` form), so each shard import costs ~0.2 ms; single-file NFK v3 wins again from ~200 lookups/eval (see `multiverse-faster/README.md`).
+| lookups/eval | fromJSON | nfk3 | nfk3s |
+|---:|---:|---:|---:|
+| 0 | 274.7 ms | 72.4 ms | — |
+| 1 | 216.7 ms | 68.6 ms | **34.4 ms** (6.3×) |
+| 5 | 229.2 ms | 65.1 ms | 34.7 ms (6.6×) |
+| 10 | 212.7 ms | 64.7 ms | 36.9 ms (5.8×) |
+| 30 | 209.2 ms | 70.5 ms | 38.2 ms (5.5×) |
+| 100 | 208.9 ms | 70.2 ms | 45.7 ms (4.6×) |
+| 200 | 223.4 ms | 74.5 ms | 55.9 ms (4.0×) |
+
+Single cold lookup by dataset size (fromJSON / nfk3): 1k keys 35.4 / 33.7 ms (parity — startup-bound), 50k 80.6 / 38.7 ms (2.1×), 200k 216.7 / 68.6 ms (3.2×) vs 34.4 ms sharded (6.3×).
+
+**Multiverse (31,904 attrs each):** versions 5.5 MB JSON / 5.7 MB `.nfd3` — fromJSON 155.5–159.0 ms flat vs nfk3 42.9–49.5 ms (3.5–3.7×) and nfk3s 33.9–53.5 ms (3.0–4.6×); history 7.8 MB JSON / 7.7 MB `.nfd3` — fromJSON 255.9–259.7 ms vs nfk3 42.6–49.4 ms (5.2–6.1×) and nfk3s 35.0–60.4 ms (4.3–7.4×). Full per-point tables in [REPORT.md](REPORT.md) and [`multiverse-faster/README.md`](multiverse-faster/README.md).
+
+**Reading the numbers:**
+
+- **The intercept is the game.** `fromJSON` is flat (~210–230 ms on 200k, ~156/257 ms on the multiverse tables) because it must parse the whole file regardless of how many keys are asked for; its per-lookup cost after the parse is negligible.
+- **Sharding wins the low-query regime.** nfk3s pays one small-shard readFile per *new* shard (~0.1–0.2 ms, import-cached for the eval) instead of a 16.3 MB readFile, so at 1 lookup it is essentially the `nix eval` startup floor (~31 ms) — 6.3× faster than `fromJSON` on 200k keys.
+- **Crossover with single-file nfk3:** on the 5.7–7.7 MB multiverse tables nfk3s is ahead through ~100 lookups and single-file takes over by ~200; on the 16.3 MB 200k-key table the single-file readFile cost (~65 ms floor) keeps nfk3s ahead across the whole measured range (1–200).
+- **Bulk scans tip back to `fromJSON`** — if an eval touches most of the table, parsing once and indexing the attrset beats per-lookup file slicing.
 
 ## Repo layout
 
 | path | role |
 |---|---|
-| `kv.nix` | NFK v1 (hash) lookup module (self-contained) |
-| `kv2.nix` | NFK v2 (dense hash) lookup module (self-contained) |
-| `kv3.nix` | NFK v3 (binary hash index) lookup module (self-contained; fastest multi-lookup eval; `db` is a path or `{ file, table }` for a shared decode table) |
-| `kv3s.nix` | sharded NFK v3 reader: takes a `--shards` directory, reads only the key's hash shard (lazy; `count` reads all shards); builds the 255-byte decode table once per eval and shares it into every shard import |
-| `kv_bin.nix` | NKB v1 (binary search, base-255) lookup module (self-contained) |
-| `kv_bin2.nix` | NKB v2 (binary search, b254) lookup module (self-contained; smallest file) |
-| `gen_kv.py` / `gen_kv2.py` / `gen_kv_bin.py` | emit the corresponding kv module(s) from the format spec (the modules above are the generated output) |
-| `build_db.py` | JSON → NFK v1 builder with independent parser + `--check` |
-| `build_db2.py` | JSON → NFK v2 builder with independent parser + `--check` |
-| `build_db3.py` | JSON → NFK v3 builder (single file or sharded `--shards/--prefix`) with independent parser + `--check` |
-| `build_db_bin.py` | JSON → NKB v1 builder with independent parser + `--check` |
-| `build_db_bin2.py` | JSON → NKB v2 builder with independent parser + `--check` |
+| `kv3.nix` | NFK v3 lookup module: `db` is a path (or string path) to one `.nfd3` file; imports the static decode table once per eval |
+| `kv3s.nix` | sharded NFK v3 reader: takes a `--shards` directory + `digits`, reads only the key's hash shard (lazy; `count` reads all shards — offline use) |
+| `nfd3-table.nix` | the 255-entry b254 decode table (static format constant; generated, not hand-edited) |
+| `build_db3.py` | JSON → NFK v3 builder (single file or `--shards/--prefix`) with independent parser + `--check`; `--write-table` regenerates `nfd3-table.nix` |
 | `gen_data.py` | deterministic test-data generator (1k / 50k / 200k keys) |
-| `test_correctness.nix`, `test_correctness2.nix`, `test_correctness3.nix`, `test_correctness_bin.nix`, `test_correctness_bin2.nix` | `fromJSON`-oracle correctness tests (all five formats) |
-| `data/` | `small|medium|large.{json,nfd,nfd2,nfd3,nkb,nkb2}` (1k / 50k / 200k keys; `*.nfd3` = NFK v3) |
-| `bench.py`, `bench_marginal.py` | benchmark harnesses, parameterized per format (`--kv/--ext/--label/--out`) |
+| `test_correctness3.nix` | `fromJSON`-oracle correctness test (every key + miss + count) |
+| `data/` | `small|medium|large.{json,nfd3}` (1k / 50k / 200k keys) + `large_shards/` (256-shard NFK v3 of `large.json`) |
+| `bench.py`, `bench_results.json` | 3-method cold-eval benchmark (fromJSON / nfk3 / nfk3s on the 200k table) + raw results |
 | `REPORT.md` | full design + benchmark + trade-off write-up |
-| `multiverse-faster/` | real-world workload: fkzakaria's nixpkgs-multiverse index (31,904 attrs) converted to NFK v3, cold-eval benchmark of `fromJSON` vs NFK3 vs sharded NFK3 (NFK3 beats fromJSON at every query count — 3.3–5.4× single-file, 3.0–7.3× sharded; sharding drops the single-lookup intercept to ≈34 ms) |
-| `suggestions.md` | NFK v3 improvement proposals (sharding — implemented as `kv3s.nix`; v4 hex-fingerprint slot; cheaper hex decode; builder hardening), 2026-08-20 |
+| `multiverse-faster/` | real-world workload: fkzakaria's nixpkgs-multiverse index (31,904 attrs) converted to NFK v3, 3-method cold-eval benchmark (single file and 256 shards), oracle, harness, and its own README |
+| `suggestions.md` | NFK v3 improvement ideas and what was rejected, 2026-08-20 |
 
 ## Known limitations
 
-- **`builtins.fromJSON` still wins for bulk scans** — if an evaluation touches most of the table, parsing once and indexing the attrset beats per-lookup file slicing. The custom formats target the common case: one or a few lookups per eval.
-- **Nix's string model limits the formats** — Nix strings cannot contain NUL, so binary formats (NKB v2, NFK v3) stop at 254-valued digits (b254: digits 0–253 in bytes `0x01`–`0xFF`); the index region of those formats is not human-diffable (the data region is unchanged). A future Nix with `builtins.parseInt` (and a modulo operator) could shrink the index further, and raw-bytes support would lift the NUL limit.
-- **sha256 is the only stable hash available** — `hashString`'s other modes (md5, siphash-*) are not stable across Nix versions/platforms in the same documented way; sha256 is ~3× slower than the alternatives but the cost is one hash per lookup, not per entry.
-- **NFK (v1/v2/v3): a probe chain of M empty slots in the worst case** — bounded but not O(1) worst case; with load ≤ 0.5 (v1) or ≤ 0.8 (v2/v3) and 64/32/24-bit fingerprints the expected chain is < 1.2 / < 2.1 / < 2.1 slots.
-- **Fixed table size** — the table is sized for the input at build time; growing the table requires rebuilding the `.nfd`/`.nfd2`/`.nfd3` file (the builder is cheap: < 2 s for 200k keys).
-- **File size** — fixed-width ASCII structural fields make NFK v1 ≈2.4× the equivalent JSON; NFK v2's 22-byte base-36 entries drop it to ≈1.3×; NKB v1's base-255 entries ≈1.23×; NKB v2's binary index (14-byte entries, file-carried byte table) ≈1.09×; NFK v3's 15-byte binary hash entries ≈1.17× (a hash index within 7% of the smallest file). The price of the binary index formats (NKB v2, NFK v3) is diffability of the index region (the data region is unchanged); the embedded table makes them self-describing instead.
+- **`builtins.fromJSON` still wins for bulk scans** — if an evaluation touches most of the table, parsing once and indexing the attrset beats per-lookup file slicing. NFK v3 targets the common case: one or a few lookups per eval.
+- **Nix's string model caps the alphabet at 254** — Nix strings cannot contain NUL, so the numeric fields stop at 254-valued digits (b254: digits 0–253 in bytes `0x01`–`0xFF`). The index region is not human-diffable (the data region is raw UTF-8); a future Nix with `builtins.parseInt` could shrink the index further, and raw-bytes support would lift the NUL limit.
+- **The decode table must exist where `kv3.nix` sits** — it is imported by path relative to `kv3.nix`; if you copy the module elsewhere, regenerate/copy `nfd3-table.nix` alongside it (`build_db3.py --write-table`). The table is a deterministic function of the format, so there is exactly one correct content.
+- **sha256 is the only stable hash available** — `hashString`'s other modes are not stable across Nix versions/platforms in the same documented way; sha256 is ~3× slower than the alternatives but the cost is one hash per lookup, not per entry.
+- **A probe walk of up to M empty slots in the worst case** — bounded but not O(1); at load ≤ 0.8 the expected chain is < 2.1 slots.
+- **Fixed table size** — the table is sized for the input at build time; growing it requires a rebuild (cheap: < 2 s for 200k keys; sharded rebuilds are parallelizable per shard).
+- **File size ≈ 1.17× the JSON** (200k keys) — the 15-byte hash index costs ~17% over the raw data; in exchange a single-lookup cold eval reads and decodes only a few hundred bytes of the 16.3 MB file.

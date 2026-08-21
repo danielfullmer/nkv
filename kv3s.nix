@@ -9,18 +9,13 @@
 #
 #   python3 build_db3.py input.json --shards 256 --prefix dir/ --check
 #   nix eval --impure --raw --expr
-#     '(import ./kv3s.nix { dir = ./dir; }).getJson "some-key"'
+#     '(import ./kv3s.nix { digits = 2; dir = ./dir; }).getJson "some-key"'
 #
 # digits: 1 | 2 | 3 -> 16 | 256 | 4096 shards. Must match --shards.
 #
 # Only the shard a key hashes to is read per lookup (the Nix import cache
 # keeps it for the rest of the eval), so the intercept is one small file
-# instead of the whole table. Every NFK v3 file carries the identical
-# 255-byte decode table at offset 64, so it is built once per eval (from
-# the all-zero shard, which the builder always writes) and shared by all
-# shard imports — without this each import would rebuild it, which was
-# the dominant part of the per-shard fixed cost. `count` reads every
-# shard — offline use.
+# instead of the whole table. `count` reads every shard — offline use.
 
 { digits ? 2, dir }:
 assert digits == 1 || digits == 2 || digits == 3;
@@ -30,22 +25,8 @@ let
   # shard_slice (sha256 hex chars 24..24+digits).
   shard = key:
     builtins.substring 24 digits (builtins.hashString "sha256" key);
-  # The all-zero shard name for this digits count.
-  zeroName = builtins.getAttr (builtins.toString digits)
-    { "1" = "0"; "2" = "00"; "3" = "000"; };
-  # The 255 table bytes, sourced from the zero shard (always present,
-  # even when empty).
-  T0 = builtins.substring 64 255 (builtins.readFile (dir + "/${zeroName}.nfd3"));
-  # char -> int decode table, built once per eval and shared by every
-  # shard import via kv3.nix's { file, table } form.
-  table0 =
-    builtins.foldl' (a: i: a // { "${builtins.substring i 1 T0}" = i; })
-    {}
-    (builtins.genList (i: i) 255);
-  # key -> the NFK v3 module for that key's shard file, using the shared
-  # table (skips the per-shard table rebuild).
-  table = key:
-    import KV3 { file = dir + "/${shard key}.nfd3"; table = table0; };
+  # key -> the NFK v3 module for that key's shard file.
+  db = key: import KV3 (dir + "/${shard key}.nfd3");
 in
 {
   # key -> shard slice (debug / shard-size checks).
@@ -53,18 +34,18 @@ in
   # key -> shard file path (debug).
   file = key: dir + "/${shard key}.nfd3";
 
-  get = key: (table key).get key;
-  getOr = key: default: (table key).getOr key default;
-  getJson = key: (table key).getJson key;
-  getOrJson = key: default: (table key).getOrJson key default;
-  has = key: (table key).has key;
+  get = key: (db key).get key;
+  getOr = key: default: (db key).getOr key default;
+  getJson = key: (db key).getJson key;
+  getOrJson = key: default: (db key).getOrJson key default;
+  has = key: (db key).has key;
 
   # Expensive: imports (reads) every shard file. Offline use only —
   # e.g. verifying the total key count in a correctness run.
   count =
     let names = builtins.attrNames (builtins.readDir dir);
     in builtins.foldl'
-      (a: n: a + (import KV3 { file = dir + "/${n}"; table = table0; }).count)
+      (a: n: a + (import KV3 (dir + "/${n}")).count)
       0
       (builtins.filter (n: builtins.substring (builtins.stringLength n - 5) 5 n == ".nfd3") names);
 }

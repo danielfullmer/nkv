@@ -1,206 +1,230 @@
 {
- "startup_ms": {
-  "min_ms": 32.1,
-  "med_ms": 34.0,
-  "mean_ms": 34.0,
-  "max_ms": 35.6
- },
- "small": {
-  "cold_present": {
-   "fromJSON": {
-    "min_ms": 32.8,
-    "med_ms": 34.2,
-    "mean_ms": 34.4,
-    "max_ms": 36.6
-   },
-   "kvl": {
-    "min_ms": 30.2,
-    "med_ms": 34.0,
-    "mean_ms": 33.7,
-    "max_ms": 36.0
-   }
-  },
-  "cold_miss": {
-   "fromJSON": {
-    "min_ms": 28.3,
-    "med_ms": 33.9,
-    "mean_ms": 33.9,
-    "max_ms": 37.0
-   },
-   "kvl": {
-    "min_ms": 33.0,
-    "med_ms": 34.3,
-    "mean_ms": 34.3,
-    "max_ms": 35.4
-   }
-  },
-  "warm_200": {
-   "fromJSON": {
-    "min_ms": 34.4,
-    "med_ms": 35.6,
-    "mean_ms": 35.3,
-    "max_ms": 35.9
-   },
-   "kvl": {
-    "min_ms": 38.5,
-    "med_ms": 38.6,
-    "mean_ms": 40.5,
-    "max_ms": 44.5
-   },
-   "per_lookup_us": {
-    "fromJSON": 178.2,
-    "kvl": 193.02
-   }
-  },
-  "floor_readfile_json_ms": {
-   "min_ms": 33.5,
-   "med_ms": 34.1,
-   "mean_ms": 34.1,
-   "max_ms": 34.6
-  },
-  "floor_readfile_nfd_ms": {
-   "min_ms": 31.6,
-   "med_ms": 32.3,
-   "mean_ms": 32.3,
-   "max_ms": 33.1
-  },
-  "floor_fromjson_parse_ms": {
-   "min_ms": 30.5,
-   "med_ms": 33.3,
-   "mean_ms": 33.1,
-   "max_ms": 35.5
+  "runs_per_config": 3,
+  "n_queries": [
+    0,
+    1,
+    5,
+    10,
+    30,
+    100,
+    200
+  ],
+  "dataset": "large",
+  "note": "cold process per eval; ms = wall time of nix eval",
+  "configs": {
+    "large/n=0": {
+      "fromJSON": {
+        "ms_min": 260.9,
+        "ms_median": 274.7,
+        "ms_all": [
+          275.3,
+          274.7,
+          260.9
+        ],
+        "out_bytes": 6
+      },
+      "nfk3": {
+        "ms_min": 66.8,
+        "ms_median": 72.4,
+        "ms_all": [
+          72.4,
+          66.8,
+          72.9
+        ],
+        "out_bytes": 6
+      }
+    },
+    "large/n=1": {
+      "fromJSON": {
+        "ms_min": 212.0,
+        "ms_median": 216.7,
+        "ms_all": [
+          216.7,
+          233.8,
+          212.0
+        ],
+        "out_bytes": 66
+      },
+      "nfk3": {
+        "ms_min": 62.7,
+        "ms_median": 68.6,
+        "ms_all": [
+          68.8,
+          68.6,
+          62.7
+        ],
+        "out_bytes": 66
+      },
+      "nfk3s": {
+        "ms_min": 31.0,
+        "ms_median": 34.4,
+        "ms_all": [
+          34.4,
+          31.0,
+          35.3
+        ],
+        "out_bytes": 66
+      }
+    },
+    "large/n=5": {
+      "fromJSON": {
+        "ms_min": 212.5,
+        "ms_median": 229.2,
+        "ms_all": [
+          244.0,
+          212.5,
+          229.2
+        ],
+        "out_bytes": 195
+      },
+      "nfk3": {
+        "ms_min": 60.1,
+        "ms_median": 65.1,
+        "ms_all": [
+          66.2,
+          65.1,
+          60.1
+        ],
+        "out_bytes": 195
+      },
+      "nfk3s": {
+        "ms_min": 32.4,
+        "ms_median": 34.7,
+        "ms_all": [
+          35.7,
+          34.7,
+          32.4
+        ],
+        "out_bytes": 195
+      }
+    },
+    "large/n=10": {
+      "fromJSON": {
+        "ms_min": 212.4,
+        "ms_median": 212.7,
+        "ms_all": [
+          212.4,
+          213.8,
+          212.7
+        ],
+        "out_bytes": 502
+      },
+      "nfk3": {
+        "ms_min": 64.1,
+        "ms_median": 64.7,
+        "ms_all": [
+          64.7,
+          68.6,
+          64.1
+        ],
+        "out_bytes": 502
+      },
+      "nfk3s": {
+        "ms_min": 34.5,
+        "ms_median": 36.9,
+        "ms_all": [
+          39.9,
+          36.9,
+          34.5
+        ],
+        "out_bytes": 502
+      }
+    },
+    "large/n=30": {
+      "fromJSON": {
+        "ms_min": 206.8,
+        "ms_median": 209.2,
+        "ms_all": [
+          206.8,
+          209.2,
+          209.5
+        ],
+        "out_bytes": 1359
+      },
+      "nfk3": {
+        "ms_min": 63.8,
+        "ms_median": 70.5,
+        "ms_all": [
+          63.8,
+          70.5,
+          71.2
+        ],
+        "out_bytes": 1359
+      },
+      "nfk3s": {
+        "ms_min": 37.8,
+        "ms_median": 38.2,
+        "ms_all": [
+          39.7,
+          37.8,
+          38.2
+        ],
+        "out_bytes": 1359
+      }
+    },
+    "large/n=100": {
+      "fromJSON": {
+        "ms_min": 207.2,
+        "ms_median": 208.9,
+        "ms_all": [
+          213.1,
+          208.9,
+          207.2
+        ],
+        "out_bytes": 4285
+      },
+      "nfk3": {
+        "ms_min": 62.6,
+        "ms_median": 70.2,
+        "ms_all": [
+          72.2,
+          70.2,
+          62.6
+        ],
+        "out_bytes": 4285
+      },
+      "nfk3s": {
+        "ms_min": 42.2,
+        "ms_median": 45.7,
+        "ms_all": [
+          45.7,
+          45.9,
+          42.2
+        ],
+        "out_bytes": 4285
+      }
+    },
+    "large/n=200": {
+      "fromJSON": {
+        "ms_min": 207.4,
+        "ms_median": 223.4,
+        "ms_all": [
+          207.4,
+          239.3,
+          223.4
+        ],
+        "out_bytes": 8656
+      },
+      "nfk3": {
+        "ms_min": 64.7,
+        "ms_median": 74.5,
+        "ms_all": [
+          76.3,
+          74.5,
+          64.7
+        ],
+        "out_bytes": 8656
+      },
+      "nfk3s": {
+        "ms_min": 55.1,
+        "ms_median": 55.9,
+        "ms_all": [
+          55.1,
+          58.4,
+          55.9
+        ],
+        "out_bytes": 8656
+      }
+    }
   }
- },
- "medium": {
-  "cold_present": {
-   "fromJSON": {
-    "min_ms": 72.7,
-    "med_ms": 78.4,
-    "mean_ms": 78.6,
-    "max_ms": 82.7
-   },
-   "kvl": {
-    "min_ms": 45.1,
-    "med_ms": 47.2,
-    "mean_ms": 48.1,
-    "max_ms": 56.1
-   }
-  },
-  "cold_miss": {
-   "fromJSON": {
-    "min_ms": 71.2,
-    "med_ms": 78.7,
-    "mean_ms": 78.5,
-    "max_ms": 90.7
-   },
-   "kvl": {
-    "min_ms": 38.7,
-    "med_ms": 46.2,
-    "mean_ms": 46.2,
-    "max_ms": 50.0
-   }
-  },
-  "warm_200": {
-   "fromJSON": {
-    "min_ms": 74.9,
-    "med_ms": 77.3,
-    "mean_ms": 76.9,
-    "max_ms": 78.4
-   },
-   "kvl": {
-    "min_ms": 50.2,
-    "med_ms": 50.4,
-    "mean_ms": 50.6,
-    "max_ms": 51.1
-   },
-   "per_lookup_us": {
-    "fromJSON": 386.3,
-    "kvl": 252.15
-   }
-  },
-  "floor_readfile_json_ms": {
-   "min_ms": 38.8,
-   "med_ms": 39.3,
-   "mean_ms": 39.2,
-   "max_ms": 39.6
-  },
-  "floor_readfile_nfd_ms": {
-   "min_ms": 45.4,
-   "med_ms": 46.2,
-   "mean_ms": 46.0,
-   "max_ms": 46.4
-  },
-  "floor_fromjson_parse_ms": {
-   "min_ms": 86.8,
-   "med_ms": 89.0,
-   "mean_ms": 88.3,
-   "max_ms": 89.2
-  }
- },
- "large": {
-  "cold_present": {
-   "fromJSON": {
-    "min_ms": 201.3,
-    "med_ms": 205.9,
-    "mean_ms": 207.1,
-    "max_ms": 218.4
-   },
-   "kvl": {
-    "min_ms": 84.5,
-    "med_ms": 97.0,
-    "mean_ms": 96.0,
-    "max_ms": 100.9
-   }
-  },
-  "cold_miss": {
-   "fromJSON": {
-    "min_ms": 194.9,
-    "med_ms": 207.0,
-    "mean_ms": 206.4,
-    "max_ms": 224.9
-   },
-   "kvl": {
-    "min_ms": 86.5,
-    "med_ms": 99.2,
-    "mean_ms": 99.6,
-    "max_ms": 111.4
-   }
-  },
-  "warm_200": {
-   "fromJSON": {
-    "min_ms": 201.5,
-    "med_ms": 202.9,
-    "mean_ms": 204.0,
-    "max_ms": 207.6
-   },
-   "kvl": {
-    "min_ms": 90.9,
-    "med_ms": 98.0,
-    "mean_ms": 95.8,
-    "max_ms": 98.5
-   },
-   "per_lookup_us": {
-    "fromJSON": 1014.35,
-    "kvl": 489.82
-   }
-  },
-  "floor_readfile_json_ms": {
-   "min_ms": 45.3,
-   "med_ms": 57.2,
-   "mean_ms": 53.2,
-   "max_ms": 57.2
-  },
-  "floor_readfile_nfd_ms": {
-   "min_ms": 95.8,
-   "med_ms": 98.1,
-   "mean_ms": 101.4,
-   "max_ms": 110.4
-  },
-  "floor_fromjson_parse_ms": {
-   "min_ms": 254.0,
-   "med_ms": 257.2,
-   "mean_ms": 256.8,
-   "max_ms": 259.2
-  }
- }
 }
