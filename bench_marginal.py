@@ -22,8 +22,8 @@ import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(BASE, "bench_marginal.json")
-SETS = [("small", "data/small.json", "data/small.nfd3"),
-        ("medium", "data/medium.json", "data/medium.nfd3")]
+SETS = [("small", "data/small.json", "data/small.nkv"),
+        ("medium", "data/medium.json", "data/medium.nkv")]
 
 
 def run_eval(expr, timeout=120):
@@ -52,10 +52,10 @@ def main():
                          "qs = %s; "
                          "in builtins.toJSON (builtins.map (a: o.${a}) qs)"
                          % (json.dumps(jpath), q)),
-            "nfk3": ("let db = import %s %s; qs = %s; "
-                     "in builtins.toJSON (builtins.map (a: db.get a) qs)"
-                     % (json.dumps(os.path.join(BASE, "kv3.nix")),
-                        json.dumps(tpath), q)),
+            "nkv": ("let db = import %s %s; qs = %s; "
+                    "in builtins.toJSON (builtins.map (a: db.get a) qs)"
+                    % (json.dumps(os.path.join(BASE, "nkv.nix")),
+                       json.dumps(tpath), q)),
         }
         row = {"key": key}
         for m, e in exprs.items():

@@ -1,4 +1,4 @@
-# Sharded NFK3 getJson vs builtins.fromJSON oracle over every attribute.
+# Sharded nkv getJson vs builtins.fromJSON oracle over every attribute.
 #
 #   nix eval --impure --json --expr "(import ./test_correctness_shards.nix)
 #     { dir = /path/to/versions_shards; jsonPath = /path/to/index/versions.json; }"
@@ -10,7 +10,7 @@
 
 { dir, jsonPath }:
 let
-  db = import ../kv3s.nix { digits = 2; dir = dir; };
+  db = import ../nkv.nix { digits = 2; dir = dir; };
   o = builtins.fromJSON (builtins.readFile jsonPath);
   ks = builtins.attrNames o.attrs;
   bad = builtins.filter (k: db.getJson k != o.attrs.${k}) ks;

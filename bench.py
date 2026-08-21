@@ -3,8 +3,8 @@
 dataset (200,000 keys, data/large.json):
 
   fromJSON : builtins.fromJSON over the whole 22 MiB JSON file
-  nfk3     : single-file NFK v3 (kv3.nix get)
-  nfk3s    : sharded NFK v3 (kv3s.nix, 256 shard files, digits = 2) —
+  nkv      : single-file nkv (nkv.nix get)
+  nkvs     : sharded nkv (nkv.nix, 256 shard files, digits = 2) —
              only the key's shard file is read (n=0 not applicable:
              there is no whole-file load; n=1 is the intercept point)
 
@@ -30,12 +30,11 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KV3 = os.path.join(HERE, "kv3.nix")
-KV3S = os.path.join(HERE, "kv3s.nix")
-JSON = os.environ.get("NFK_JSON", os.path.join(HERE, "data/large.json"))
-TABLE = os.environ.get("NFK_TABLE", os.path.join(HERE, "data/large.nfd3"))
-SHARDS = os.environ.get("NFK_SHARDS", os.path.join(HERE, "data/large_shards"))
-OUT = os.environ.get("NFK_OUT", os.path.join(HERE, "bench_results.json"))
+NKV = os.path.join(HERE, "nkv.nix")
+JSON = os.environ.get("NKV_JSON", os.path.join(HERE, "data/large.json"))
+TABLE = os.environ.get("NKV_TABLE", os.path.join(HERE, "data/large.nkv"))
+SHARDS = os.environ.get("NKV_SHARDS", os.path.join(HERE, "data/large_shards"))
+OUT = os.environ.get("NKV_OUT", os.path.join(HERE, "bench_results.json"))
 NQS = 200
 NS = [0, 1, 5, 10, 30, 100, 200]
 
@@ -61,22 +60,22 @@ def expr_fromjson(qs):
             % (json.dumps(JSON), qlit(qs)))
 
 
-def expr_nfk3(qs):
+def expr_nkv(qs):
     if not qs:
         return ("let db = import %s %s; in builtins.toJSON db.count"
-                % (json.dumps(KV3), json.dumps(TABLE)))
+                % (json.dumps(NKV), json.dumps(TABLE)))
     return ("let db = import %s %s; qs = %s; "
             "in builtins.toJSON (builtins.map (a: db.get a) qs)"
-            % (json.dumps(KV3), json.dumps(TABLE), qlit(qs)))
+            % (json.dumps(NKV), json.dumps(TABLE), qlit(qs)))
 
 
-def expr_nfk3s(qs):
-    """Sharded NFK v3: only the shard a key hashes to is read."""
+def expr_nkvs(qs):
+    """Sharded nkv: only the shard a key hashes to is read."""
     if not qs:
         return None  # no whole-file load point; n=1 is the intercept
     return ("let db = import %s { digits = 2; dir = %s; }; qs = %s; "
             "in builtins.toJSON (builtins.map (a: db.get a) qs)"
-            % (json.dumps(KV3S), json.dumps(SHARDS), qlit(qs)))
+            % (json.dumps(NKV), json.dumps(SHARDS), qlit(qs)))
 
 
 def run_eval(expr, timeout=120):
@@ -108,9 +107,9 @@ def main():
     for n in NS:
         cfg = f"large/n={n}"
         exprs = {"fromJSON": expr_fromjson(qs[:n]),
-                 "nfk3": expr_nfk3(qs[:n])}
+                 "nkv": expr_nkv(qs[:n])}
         if n > 0:
-            exprs["nfk3s"] = expr_nfk3s(qs[:n])
+            exprs["nkvs"] = expr_nkvs(qs[:n])
         res = {}
         for m, e in exprs.items():
             dts = []

@@ -1,10 +1,10 @@
-# multiverse-faster: NFK3 (single + sharded) vs `builtins.fromJSON` on the nixpkgs-multiverse workload
+# multiverse-faster: nkv (single + sharded) vs `builtins.fromJSON` on the nixpkgs-multiverse workload
 
 Replicates the workload of ["Three ways to smuggle SQLite into Nix"](https://fzakaria.com/2026-08-19/three-ways-to-smuggle-sqlite-into-nix)
-(fzakaria, 2026-08-19) using the NFK3 tables from the parent project
-(`../kv3.nix`, `../kv3s.nix`, `../build_db3.py`) instead of the article's
-`builtins.fromJSON` approach. Compared: `fromJSON`, single-file NFK3, and
-256-shard sharded NFK3 (`kv3s.nix`); the article's `builtins.exec` /
+(fzakaria, 2026-08-19) using the nkv tables from the parent project
+(`../nkv.nix`, `../build_db3.py`) instead of the article's
+`builtins.fromJSON` approach. Compared: `fromJSON`, single-file nkv, and
+256-shard sharded nkv (`nkv.nix`); the article's `builtins.exec` /
 `importNative` / `wasm-sqlite` alternatives are out of scope.
 
 ## Data
@@ -20,12 +20,12 @@ Downloaded from the pinned commit of the article's dataset
 Both files: `{ "revisionCount": 1534, "attrs": { … } }` with **31,904
 attributes** and 305,492 inner entries (the article's "305,492 package
 versions"). Inner keys contain dots/dates, and `revisionCount` is not an
-attr — so the JSON is flattened exactly one level for NFK3:
+attr — so the JSON is flattened exactly one level for nkv:
 
 ```
-NFK3 key   = attribute name (exact match — no delimiter ambiguity)
-NFK3 value = the inner map, stored as a compact JSON document,
-             decoded by kv3.nix's getJson / getOrJson
+nkv key   = attribute name (exact match — no delimiter ambiguity)
+nkv value = the inner map, stored as a compact JSON document,
+             decoded by nkv.nix's getJson / getOrJson
 ```
 
 ## Files
@@ -34,10 +34,10 @@ NFK3 value = the inner map, stored as a compact JSON document,
 |---|---|
 | `convert.py` | `index/*.json` → `{ attr: innerMap }` flat JSON |
 | `versions_flat.json`, `history_flat.json` | flattened inputs (generated) |
-| `versions.nfd3` (5,098,977 B), `history.nfd3` (7,142,227 B) | NFK3 tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nfd3-table.nix`) |
+| `versions.nkv` (5,098,977 B), `history.nkv` (7,142,227 B) | nkv tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nkv-table.nix`) |
 | `test_correctness.nix` | every-attr `getJson` vs `fromJSON` oracle |
 | `bench.py`, `bench_results.json` | cold-eval benchmark harness + results |
-| `versions_shards/`, `history_shards/` | 256 sharded NFK3 tables each (`<h[24:26]>.nfd3`; generated) |
+| `versions_shards/`, `history_shards/` | 256 sharded nkv tables each (`<h[24:26]>.nkv`; generated) |
 | `test_correctness_shards.nix` | every-attr `getJson` vs `fromJSON` oracle over the sharded tables |
 
 ## Rebuild
@@ -45,25 +45,25 @@ NFK3 value = the inner map, stored as a compact JSON document,
 ```sh
 python3 convert.py index/versions.json versions_flat.json
 python3 convert.py index/history.json history_flat.json
-python3 ../build_db3.py versions_flat.json versions.nfd3 --check
-python3 ../build_db3.py history_flat.json history.nfd3 --check
+python3 ../build_db3.py versions_flat.json versions.nkv --check
+python3 ../build_db3.py history_flat.json history.nkv --check
 python3 ../build_db3.py versions_flat.json --shards 256 --prefix versions_shards/ --check
 python3 ../build_db3.py history_flat.json --shards 256 --prefix history_shards/ --check
 ```
 
 ## Correctness
 
-- `build_db3.py --check` (independent Python re-parse of the `.nfd3`
+- `build_db3.py --check` (independent Python re-parse of the `.nkv`
   bytes): **31,904/31,904 ok** for both tables, miss → `null`.
 - Nix-side oracle, one cold `nix eval` per file comparing every attribute
   `db.getJson k == (fromJSON index).attrs.${k}`:
 
 ```
-$ nix eval --impure --json --expr "(import ./test_correctness.nix) { table = ./versions.nfd3; jsonPath = ./index/versions.json; }"
+$ nix eval --impure --json --expr "(import ./test_correctness.nix) { table = ./versions.nkv; jsonPath = ./index/versions.json; }"
 {"total":31904,"mismatches":0,"firstBad":null,"missNull":true}
 ```
 
-Same result for `history.nfd3`. The 31,904-lookup full scan completes in
+Same result for `history.nkv`. The 31,904-lookup full scan completes in
 ~1.0–1.2 s wall in a single eval.
 
 - Same test against the 256-shard directories
@@ -99,9 +99,9 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
 
 **versions.json** — fromJSON's work term is ~121–127 ms (parse of the
 5.48 MB nested `index/versions.json`) no matter how many queries it answers
-(total ~155–158 ms); sharded NFK3 (256 files, `kv3s.nix`) only reads the key's shard:
+(total ~155–158 ms); sharded nkv (256 files, `nkv.nix`) only reads the key's shard:
 
-| N queries | fromJSON | NFK3 | NFK3 sharded |
+| N queries | fromJSON | nkv | nkv sharded |
 |---:|---:|---:|---:|
 | 0 | 157.4 (126.8) | 42.9 (10.1) | — |
 | 1 | 157.2 (123.9) | 43.8 (12.6) (9.8×) | **35.3 (3.1)** (≈40×) |
@@ -113,7 +113,7 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
 
 **history.json** (larger file, larger values):
 
-| N queries | fromJSON | NFK3 | NFK3 sharded |
+| N queries | fromJSON | nkv | nkv sharded |
 |---:|---:|---:|---:|
 | 0 | 254.9 (226.6) | 45.8 (16.3) | — |
 | 1 | 256.4 (228.3) | 44.8 (12.4) (18.4×) | **33.3 (0.0)** |
@@ -129,13 +129,13 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
   (~121–127 ms versions, ~221–228 ms history regardless of N — total
   ~155–158 / ~253–259 ms; the article's flat ~0.29 s),
   because it must parse the entire file; each extra query costs ~0
-  (attrset lookup). NFK3's intercept is the measured `nix eval` load
+  (attrset lookup). nkv's intercept is the measured `nix eval` load
   floor (32.4 ms median here) plus one file read (the decode table is
-  the static `../nfd3-table.nix`, imported once per eval); each query
+  the static `../nkv-table.nix`, imported once per eval); each query
   costs a few key-read probe steps — key bytes compared at every
   occupied slot, so a wrong value is impossible by construction — plus
   `fromJSON` of a ≤11 KB value document.
-- **NFK3 wins at every N**, including a single query, on the data work
+- **nkv wins at every N**, including a single query, on the data work
   (startup excluded): 8–12× on versions, 11–18× on history (single
   file); sharded is 7–42× (versions) and 11–149× (history, N ≥ 5, low
   query counts; at N = 1 the history sharded work rounds to 0.0). For a
@@ -145,7 +145,7 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
   single-lookup total drops from 43.8/44.8 ms (single file) to
   35.3/33.3 ms (sharded) — work 3.1/0.0 ms — against a measured 32.4 ms
   floor: an ~11–50 KB shard read plus a few probe steps nearly vanishes
-  into the startup. On the data work, sharded NFK3 is ~149× (history) /
+  into the startup. On the data work, sharded nkv is ~149× (history) /
   ≈40× (versions) the fromJSON parse + whole-file-read work (at N = 1 the
   sharded work rounds to 0.0). Only one or a few distinct shards are
   touched, so a shard import is just a readFile + header asserts.
@@ -159,8 +159,8 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
   50.7 vs 46.5 median) — crossover ~100–200. history: sharded ahead
   through N=100 (44.0 vs 49.3; work 10.6 vs 19.5); at N=200 single-file
   takes over (51.7 vs 49.7 on the min row; 54.1 vs 51.2 median) —
-  crossover at the top of the measured range. Use `kv3s.nix` for
-  lock-file-style workloads (≲ 100 lookups/eval) and `kv3.nix` for
+  crossover at the top of the measured range. Use `nkv.nix` for
+  lock-file-style workloads (≲ 100 lookups/eval) and `nkv.nix` for
   large single-eval lookup sets.
 - Table size ≈ input size (5.10 MB vs 4.83 MB `versions_flat.json`,
   1.06×; 7.14 MB vs 6.88 MB `history_flat.json`, 1.04×), unlike the
@@ -168,7 +168,7 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
   the article).
 - Absolute numbers differ from the article's ~0.29 s fromJSON baseline
   (different machine and Nix version; its chart also started at N=1),
-  but the shape — flat fromJSON, small-intercept NFK3 — is reproduced.
+  but the shape — flat fromJSON, small-intercept nkv — is reproduced.
 
 ## Caveats
 
@@ -176,7 +176,7 @@ startup drops out of both; the raw baseline series is in `bench_results.json`
   section, which used this exact file); the article's SQLite `versions`
   table is keyed by package version instead. The benchmarked workload is
   the JSON-file path, which is the one being replicated here.
-- 31,904 entries / M=65,536 fits the NFK3 limits comfortably (largest value
+- 31,904 entries / M=65,536 fits the nkv limits comfortably (largest value
   7.4/10.9 KB < 16.39 MB per-value limit).
 - Cold-process timing only (the article's benchmark is also cold-eval);
   memory not measured.

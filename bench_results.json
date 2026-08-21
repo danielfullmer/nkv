@@ -29,7 +29,7 @@
         "work_ms_median": 225.0,
         "out_bytes": 6
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 57.0,
         "ms_median": 58.6,
         "ms_all": [
@@ -63,7 +63,7 @@
         "work_ms_median": 174.7,
         "out_bytes": 66
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 52.8,
         "ms_median": 56.7,
         "ms_all": [
@@ -79,7 +79,7 @@
         "work_ms_median": 22.9,
         "out_bytes": 66
       },
-      "nfk3s": {
+      "nkvs": {
         "ms_min": 33.9,
         "ms_median": 34.3,
         "ms_all": [
@@ -113,7 +113,7 @@
         "work_ms_median": 175.2,
         "out_bytes": 195
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 48.7,
         "ms_median": 58.0,
         "ms_all": [
@@ -129,7 +129,7 @@
         "work_ms_median": 25.0,
         "out_bytes": 195
       },
-      "nfk3s": {
+      "nkvs": {
         "ms_min": 33.0,
         "ms_median": 34.9,
         "ms_all": [
@@ -163,7 +163,7 @@
         "work_ms_median": 181.4,
         "out_bytes": 502
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 57.2,
         "ms_median": 59.4,
         "ms_all": [
@@ -179,7 +179,7 @@
         "work_ms_median": 26.0,
         "out_bytes": 502
       },
-      "nfk3s": {
+      "nkvs": {
         "ms_min": 31.1,
         "ms_median": 35.1,
         "ms_all": [
@@ -213,7 +213,7 @@
         "work_ms_median": 178.0,
         "out_bytes": 1359
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 49.9,
         "ms_median": 57.7,
         "ms_all": [
@@ -229,7 +229,7 @@
         "work_ms_median": 24.8,
         "out_bytes": 1359
       },
-      "nfk3s": {
+      "nkvs": {
         "ms_min": 26.8,
         "ms_median": 34.5,
         "ms_all": [
@@ -263,7 +263,7 @@
         "work_ms_median": 177.7,
         "out_bytes": 4285
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 56.6,
         "ms_median": 59.1,
         "ms_all": [
@@ -279,7 +279,7 @@
         "work_ms_median": 25.0,
         "out_bytes": 4285
       },
-      "nfk3s": {
+      "nkvs": {
         "ms_min": 35.8,
         "ms_median": 43.1,
         "ms_all": [
@@ -313,7 +313,7 @@
         "work_ms_median": 174.7,
         "out_bytes": 8656
       },
-      "nfk3": {
+      "nkv": {
         "ms_min": 59.3,
         "ms_median": 63.8,
         "ms_all": [
@@ -329,7 +329,7 @@
         "work_ms_median": 32.2,
         "out_bytes": 8656
       },
-      "nfk3s": {
+      "nkvs": {
         "ms_min": 46.2,
         "ms_median": 52.9,
         "ms_all": [

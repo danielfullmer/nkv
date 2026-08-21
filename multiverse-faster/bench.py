@@ -7,8 +7,8 @@ Workload: one cold `nix eval --impure --raw` process answers N queries of
 only). Three methods compared:
 
   fromJSON : builtins.fromJSON over the whole 5.3/7.5 MiB index file
-  nfk3     : our NFK3 table (kv3.nix getJson) — per-attr compact JSON
-  nfk3s    : sharded NFK3 (kv3s.nix, 256 shard files) — per-attr compact
+  nkv      : our nkv table (nkv.nix getJson) — per-attr compact JSON
+  nkvs     : sharded nkv (nkv.nix, 256 shard files) — per-attr compact
              JSON, only the key's shard file is read (n=0 not applicable:
              there is no whole-file load; n=1 is the intercept point)
 
@@ -30,8 +30,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARENT = os.path.dirname(HERE)
-KV3 = os.path.join(PARENT, "kv3.nix")
-KV3S = os.path.join(PARENT, "kv3s.nix")
+NKV = os.path.join(PARENT, "nkv.nix")
 NQS = 200
 NS = [0, 1, 5, 10, 30, 100, 200]
 
@@ -63,22 +62,22 @@ def expr_fromjson(j, qs):
             % (json.dumps(j), qlit(qs)))
 
 
-def expr_nfkc3(t, qs):
+def expr_nkv(t, qs):
     if not qs:
         return ("let db = import %s %s; in builtins.toJSON db.count"
-                % (json.dumps(KV3), json.dumps(t)))
+                % (json.dumps(NKV), json.dumps(t)))
     return ("let db = import %s %s; qs = %s; "
             "in builtins.toJSON (builtins.map (a: db.getJson a) qs)"
-            % (json.dumps(KV3), json.dumps(t), qlit(qs)))
+            % (json.dumps(NKV), json.dumps(t), qlit(qs)))
 
 
-def expr_nfkc3s(d, qs):
-    """Sharded NFK3: only the shard a key hashes to is read."""
+def expr_nkvs(d, qs):
+    """Sharded nkv: only the shard a key hashes to is read."""
     if not qs:
         return None  # no whole-file load point; n=1 is the intercept
     return ("let db = import %s { digits = 2; dir = %s; }; qs = %s; "
             "in builtins.toJSON (builtins.map (a: db.getJson a) qs)"
-            % (json.dumps(KV3S), json.dumps(d), qlit(qs)))
+            % (json.dumps(NKV), json.dumps(d), qlit(qs)))
 
 
 def run_eval(expr, timeout=120):
@@ -95,11 +94,11 @@ def main():
     runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3
     files = [
         ("versions", os.path.join(HERE, "index/versions.json"),
-         os.path.join(HERE, "versions.nfd3"),
+         os.path.join(HERE, "versions.nkv"),
          os.path.join(HERE, "versions_flat.json"),
          os.path.join(HERE, "versions_shards")),
         ("history", os.path.join(HERE, "index/history.json"),
-         os.path.join(HERE, "history.nfd3"),
+         os.path.join(HERE, "history.nkv"),
          os.path.join(HERE, "history_flat.json"),
          os.path.join(HERE, "history_shards")),
     ]
@@ -121,9 +120,9 @@ def main():
         for n in NS:
             cfg = f"{name}/n={n}"
             exprs = {"fromJSON": expr_fromjson(j, qs[:n]),
-                     "nfk3": expr_nfkc3(t, qs[:n])}
+                     "nkv": expr_nkv(t, qs[:n])}
             if n > 0:
-                exprs["nfk3s"] = expr_nfkc3s(sd, qs[:n])
+                exprs["nkvs"] = expr_nkvs(sd, qs[:n])
             res = {}
             for m, e in exprs.items():
                 dts = []

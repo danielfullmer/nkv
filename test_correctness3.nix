@@ -1,10 +1,10 @@
-# test_correctness3.nix — verify kv3.nix (NFK v3, dense hash + binary
+# test_correctness3.nix — verify nkv.nix (nkv, dense hash + binary
 # index) lookups match fromJSON.
 # fromJSON is used HERE (test harness only), never in the implementation.
 # Invoke:  nix eval --impure --expr '(import ./test_correctness3.nix) "small"'
 size:
 let
-  db    = (import ./kv3.nix) (./data/${size}.nfd3);
+  db    = (import ./nkv.nix) (./data/${size}.nkv);
   j     = builtins.fromJSON (builtins.readFile (./data/${size}.json));
   names = builtins.attrNames j;
   n     = builtins.length names;
