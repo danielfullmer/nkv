@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Cold nix-eval benchmark replicating the fkzakaria 2026-08-19 workload
+("three ways to smuggle sqlite into nix") on nixpkgs-multiverse index data.
+
+Workload: one cold `nix eval --impure --raw` process answers N queries of
+"which revisions shipped this package?" (N attribute lookups; N=0 = load
+only). Two methods compared:
+
+  fromJSON : builtins.fromJSON over the whole 5.3/7.5 MiB index file
+  nfk3     : our NFK3 table (kv3.nix getJson) — per-attr compact JSON
+
+Queries: "hello" + 199 strided samples of the sorted attr names, per file.
+
+Usage: bench.py [runs_per_config]
+"""
+import json
+import os
+import statistics
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PARENT = os.path.dirname(HERE)
+KV3 = os.path.join(PARENT, "kv3.nix")
+NQS = 200
+NS = [0, 1, 5, 10, 30, 100, 200]
+
+
+def queries_for(flat_path):
+    d = json.load(open(flat_path))
+    attrs = sorted(d)
+    assert "hello" in d, "hello missing from attr set"
+    qs = ["hello"]
+    i = 0
+    while len(qs) < NQS:
+        a = attrs[(i * len(attrs)) // NQS]
+        if a not in qs:
+            qs.append(a)
+        i += 1
+    return qs[:NQS]
+
+
+def qlit(qs):
+    return "[ " + " ".join(json.dumps(q) for q in qs) + " ]"
+
+
+def expr_fromjson(j, qs):
+    if not qs:
+        return ("let o = builtins.fromJSON (builtins.readFile %s); "
+                "in builtins.toJSON o.revisionCount" % json.dumps(j))
+    return ("let o = builtins.fromJSON (builtins.readFile %s); qs = %s; "
+            "in builtins.toJSON (builtins.map (a: o.attrs.${a}) qs)"
+            % (json.dumps(j), qlit(qs)))
+
+
+def expr_nfkc3(t, qs):
+    if not qs:
+        return ("let db = import %s %s; in builtins.toJSON db.count"
+                % (json.dumps(KV3), json.dumps(t)))
+    return ("let db = import %s %s; qs = %s; "
+            "in builtins.toJSON (builtins.map (a: db.getJson a) qs)"
+            % (json.dumps(KV3), json.dumps(t), qlit(qs)))
+
+
+def run_eval(expr, timeout=120):
+    t0 = time.monotonic()
+    p = subprocess.run(["nix", "eval", "--impure", "--raw", "--expr", expr],
+                       capture_output=True, text=True, timeout=timeout)
+    dt = (time.monotonic() - t0) * 1000
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.strip()[:500])
+    return dt, p.stdout
+
+
+def main():
+    runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    files = [
+        ("versions", os.path.join(HERE, "index/versions.json"),
+         os.path.join(HERE, "versions.nfd3"),
+         os.path.join(HERE, "versions_flat.json")),
+        ("history", os.path.join(HERE, "index/history.json"),
+         os.path.join(HERE, "history.nfd3"),
+         os.path.join(HERE, "history_flat.json")),
+    ]
+    out = {"runs_per_config": runs, "n_queries": NS,
+           "note": "cold process per eval; ms = wall time of nix eval",
+           "configs": {}}
+    for name, j, t, flat in files:
+        qs = queries_for(flat)
+        for n in NS:
+            cfg = f"{name}/n={n}"
+            exprs = {"fromJSON": expr_fromjson(j, qs[:n]),
+                     "nfk3": expr_nfkc3(t, qs[:n])}
+            res = {}
+            for m, e in exprs.items():
+                dts = []
+                outlen = 0
+                for _ in range(runs):
+                    dt, outp = run_eval(e)
+                    dts.append(dt)
+                    outlen = len(outp)
+                    assert outp.strip(), "empty output — result not forced?"
+                res[m] = {"ms_min": round(min(dts), 1),
+                          "ms_median": round(statistics.median(dts), 1),
+                          "ms_all": [round(x, 1) for x in dts],
+                          "out_bytes": outlen}
+            out["configs"][cfg] = res
+            print(cfg + ": " + "  ".join(
+                f"{m} min={res[m]['ms_min']} med={res[m]['ms_median']}"
+                for m in res), flush=True)
+    with open(os.path.join(HERE, "bench_results.json"), "w") as f:
+        json.dump(out, f, indent=2)
+    print("wrote bench_results.json")
+
+
+if __name__ == "__main__":
+    main()
