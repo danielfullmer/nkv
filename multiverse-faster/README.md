@@ -34,7 +34,7 @@ NFK3 value = the inner map, stored as a compact JSON document,
 |---|---|
 | `convert.py` | `index/*.json` → `{ attr: innerMap }` flat JSON |
 | `versions_flat.json`, `history_flat.json` | flattened inputs (generated) |
-| `versions.nfd3` (5,361,169 B), `history.nfd3` (7,404,419 B) | NFK3 tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nfd3-table.nix`) |
+| `versions.nfd3` (5,361,121 B), `history.nfd3` (7,404,371 B) | NFK3 tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nfd3-table.nix`) |
 | `test_correctness.nix` | every-attr `getJson` vs `fromJSON` oracle |
 | `bench.py`, `bench_results.json` | cold-eval benchmark harness + results |
 | `versions_shards/`, `history_shards/` | 256 sharded NFK3 tables each (`<h[24:26]>.nfd3`; generated) |
@@ -174,7 +174,7 @@ sharded NFK3 (256 files, `kv3s.nix`) only reads the key's shard:
   section, which used this exact file); the article's SQLite `versions`
   table is keyed by package version instead. The benchmarked workload is
   the JSON-file path, which is the one being replicated here.
-- 31,904 entries / M=65,536 fits the NFK3 limits comfortably (value total
-  4.39/6.43 MB < 16.39 MB dec3 limit).
+- 31,904 entries / M=65,536 fits the NFK3 limits comfortably (largest value
+  7.4/10.9 KB < 16.39 MB per-value limit).
 - Cold-process timing only (the article's benchmark is also cold-eval);
   memory not measured.

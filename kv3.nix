@@ -18,14 +18,11 @@
 #   0..3    magic "NFK3"
 #   4..6    N         3 b254 bytes
 #   7..10   M         4 b254 bytes
-#   11..13  keyTotal  3 b254 bytes
-#   14..16  valTotal  3 b254 bytes
-#   17      format revision byte: '2'
-#   18..21  entry field widths in bytes (b254 digits):
+#   11      format revision byte: '5'
+#   12..15  entry field widths in bytes (b254 digits):
 #           fpW 1-4 | keyOffW 1-4 | keyLenW 1-3 | valLenW 1-3;
 #           entry width EW = fpW + keyOffW + keyLenW + valLenW (7-14)
-#   22..63  reserved (spaces)
-#   64..    M entries of EW bytes: fp | keyOff | keyLen | valLen at
+#   16..    M entries of EW bytes: fp | keyOff | keyLen | valLen at
 #           entry offsets 0, fpW, fpW+keyOffW, fpW+keyOffW+keyLenW
 #   then    data region: for each key in insertion order, the key's bytes
 #           followed immediately by the value's bytes; keyOff is absolute
@@ -41,7 +38,7 @@
 # See README.md and REPORT.md for the format and benchmarks.
 
 let
-  H = 64;    # header width
+  H = 16;    # header width
   T0 = H;    # index region start
   B = 254;   # b254 base (digit 0..253 -> byte 1..254)
 
@@ -78,16 +75,14 @@ db:
     # Header fields.
     n = dec3 4;
     m = dec4 7;
-    keyTotal = dec3 11;
-    valTotal = dec3 14;
 
-    # Entry field widths (revision 2), stored once per file in the header
-    # at offsets 18..21; each is a b254 digit == width in bytes
+    # Entry field widths, stored once per file in the header
+    # at offsets 12..15; each is a b254 digit == width in bytes
     # (byte = digit + 1), so `byte` returns the width directly.
-    fpW = byte 18;
-    koffW = byte 19;
-    klenW = byte 20;
-    vlenW = byte 21;
+    fpW = byte 12;
+    koffW = byte 13;
+    klenW = byte 14;
+    vlenW = byte 15;
 
     # Width-selecting decoder: one specialized thunk per width (1-4
     # b254 bytes), chosen once at import so the probe hot path stays
@@ -139,10 +134,9 @@ db:
           0;
   in
   assert (builtins.substring 0 4 raw) == "NFK3";
-  assert (builtins.substring 17 1 raw) == "2";
+  assert (builtins.substring 11 1 raw) == "5";
   assert fpW >= 1 && fpW <= 4 && koffW >= 1 && koffW <= 4
     && klenW >= 1 && klenW <= 3 && vlenW >= 1 && vlenW <= 3;
-  assert (builtins.stringLength raw) == T0 + EW * m + keyTotal + valTotal;
   let
   in
   {

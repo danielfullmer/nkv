@@ -27,7 +27,7 @@ table drops from ~213 ms (`fromJSON`) to **~34 ms (sharded) / ~60 ms
 | Cold single lookup, 200k keys | ~34 ms sharded (work 0.6) / ~60 ms single-file NFK v3 (work 25.9) vs ~213 ms `builtins.fromJSON` (work 179.4) — ~299× / 6.9× on the data work |
 | Cold single lookup, 50k keys | 41.1 ms (work 7.8) vs 80.1 ms (work 46.3), 5.9× on work; 1k keys: 34.7 vs 34.9 ms, work ≈ 1 ms each (parity, startup-bound) |
 | nixpkgs-multiverse, 31,904 attrs | 10–18× (single file) and 6.8–251× (256 shards; low query counts) across N = 1–200, on the data work |
-| file size | 200k keys: 14,700,716 B = 1.05× the 13.9 MB JSON |
+| file size | 200k keys: 14,700,668 B = 1.05× the 13.9 MB JSON |
 | Nix load floor | Measured as a cold empty eval (`nix eval --impure --raw --expr '""'`, no expression work): 33.6 ms median (parent, 31.9–34.8) / 34.0 ms (multiverse, 33.5–36.0); NFK v3 work on top: ~0.6–23 ms sharded / ~1–30 ms single-file; `fromJSON` parse work ~123–230 ms |
 
 ## Why not `builtins.fromJSON`?
@@ -37,7 +37,7 @@ but the 13.9 MB file is parsed on **every evaluation, for any number of
 lookups**: ~209–214 ms wall per eval on the 200k-key table — ~174–180 ms of
 work on top of the ~34 ms Nix load floor — flat from 1 to 200 lookups
 (the parse is the whole work term). NFK v3
-reads only the 64-byte header, one W-byte (9–10 byte) index entry per probe
+reads only the 16-byte header, one W-byte (9–10 byte) index entry per probe
 step, and
 the one key/value pair needed. The lookup result is identical; the
 correctness oracle (`test_correctness3.nix`) checks every key against
@@ -53,25 +53,22 @@ header — so every file byte is `0x01`–`0xFF` and the file never contains NUL
 the one byte Nix's `readFile` rejects.
 
 ```
-     offset 0              header, 64 bytes
-     offset 64             index region, M × W bytes (W = 9–10)
-     offset 64 + M·W       data region (interleaved, variable)
+     offset 0              header, 16 bytes
+     offset 16             index region, M × W bytes (W = 9–10)
+     offset 16 + M·W       data region (interleaved, variable)
 ```
 
-**Header (64 bytes):**
+**Header (16 bytes):**
 
 | field | offset | width | meaning |
 |---|---:|---:|---|
 | magic | 0 | 4 | `NFK3` |
 | `N` | 4 | 3 | entry count (b254) |
 | `M` | 7 | 4 | table size, power of two (b254) |
-| `keyTotal` | 11 | 3 | total key bytes (b254) |
-| `valTotal` | 14 | 3 | total value bytes (b254) |
-| revision | 17 | 1 | `2` (0x32) — parameterized field widths |
-| `fpW` `koffW` `klenW` `vlenW` | 18–21 | 4 | per-field b254 widths: 1–4 / 1–4 / 1–3 / 1–3 |
-| — | 22 | 42 | reserved (spaces) |
+| revision | 11 | 1 | `5` (0x35) — no data-region totals |
+| `fpW` `koffW` `klenW` `vlenW` | 12–15 | 4 | per-field b254 widths: 1–4 / 1–4 / 1–3 / 1–3 |
 
-**Index region** — one W-byte entry per table slot `s` at offset `64 + W·s`:
+**Index region** — one W-byte entry per table slot `s` at offset `16 + W·s`:
 
 | field | offset | width | meaning |
 |---|---:|---:|---|
@@ -111,19 +108,18 @@ false fingerprint matches per lookup at 200k keys (≈ 1,190 colliding key
 pairs total); each false match costs one extra key read + byte compare
 and can never yield a wrong value.
 
-**Limits** (builder-enforced): `N` / `keyTotal` / `valTotal` / key length /
-value length < 254³ (≈16.4 MB); `M` and file offsets < 254⁴ (≈4.16 GB); no
-NUL anywhere. The independent `--check` parser re-validates the magic, the
-revision byte, the reserved header spaces, the absence of NUL, and the exact
-file size, and re-probes every key.
+**Limits** (builder-enforced): `N`, key length, and value length < 254³
+(≈16.4 MB); `M` and file offsets < 254⁴ (≈4.16 GB); no NUL anywhere. The
+independent `--check` parser re-validates the magic, the revision byte, the
+reserved header spaces, and the absence of NUL, and re-probes every key.
 
 Measured sizes (JSON → NFK v3, with static table):
 
 | dataset | keys | JSON bytes | NFK v3 bytes | index bytes | ratio |
 |---|---:|---:|---:|---:|---:|
-| small | 1,005 | 68,534 | 78,990 | 18,432 | 1.15× |
-| medium | 50,000 | 3,463,238 | 3,653,126 | 589,824 | 1.05× |
-| large | 200,000 | 13,941,356 | 14,700,716 | 2,359,296 | 1.05× |
+| small | 1,005 | 68,534 | 78,942 | 18,432 | 1.15× |
+| medium | 50,000 | 3,463,238 | 3,653,078 | 589,824 | 1.05× |
+| large | 200,000 | 13,941,356 | 14,700,668 | 2,359,296 | 1.05× |
 
 W-byte entries, no padding (current builds: W = 9–10 = `fp` 4 + `keyOff` 3 +
 `keyLen` 1 + `valLen` 1–2 — W = 9 for the parent tables, W = 10 for the
@@ -143,7 +139,7 @@ lookup(key):
   fp = int(h[0:6], 16) + 1              # 24-bit fingerprint
   s  = int(h[56:64], 16) AND (M - 1)    # initial slot
   for i in 0..M:                        # bounded walk
-    e    = 64 + W * ((s + i) AND (M - 1)) # W from the header (bitAnd wrap)
+    e    = 16 + W * ((s + i) AND (M - 1)) # W from the header (bitAnd wrap)
     efp  = b254-decode(entry[e .. e+fpW]) # fpW static-table lookups
     if efp = 0: return null             # unused slot: key absent
     if efp ≠ fp: continue               # fingerprint miss: probe on
@@ -214,8 +210,8 @@ in {
 }
 ```
 
-The module asserts the `NFK3` magic, the revision byte, the field widths, and the exact
-file size at import.
+The module asserts the `NFK3` magic, the revision byte, and the field
+widths at import.
 
 ```sh
 python3 build_db3.py INPUT.json OUTPUT.nfd3 --check        # single file
@@ -223,8 +219,8 @@ python3 build_db3.py INPUT.json --shards 256 --prefix DIR/ --check   # sharded
 python3 build_db3.py --write-table nfd3-table.nix          # regenerate the static table
 ```
 
-Builder guarantees: `N` / `keyTotal` / `valTotal` and each key/value length
-< 254³ bytes, `M` and file offsets < 254⁴ (raises otherwise); the Python
+Builder guarantees: `N` and each key/value length < 254³ bytes, `M` and
+file offsets < 254⁴ (raises otherwise); the Python
 hash is byte-identical to Nix's (`hashlib.sha256(k).hexdigest()` → same
 `fp` and same `int(h[56:64],16) & (M-1)` slot), which the cross-language
 round-trip proves; single-file output is byte-identical across rebuilds.
@@ -429,7 +425,7 @@ Verdict from the numbers:
    all approaches tie: ~34 ms total each, of which ~1 ms is data work —
    the rest is Nix itself loading.
 3. **File size**: 1.05× the JSON at 50k and 200k keys (index is ~16% of the
-   file); 1.15× at 1k keys where the fixed 64-byte header + 18,432-byte
+   file); 1.15× at 1k keys where the fixed 16-byte header + 18,432-byte
    index (M = 2,048) dominate. Parameterized field widths (revision 2)
    dropped the fixed 15-byte rev-1 entries (no padding) and cut the 200k-key
    file from 16.3 MB to 14.7 MB. Moving the 255-byte decode table out of

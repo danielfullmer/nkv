@@ -18,15 +18,12 @@ only the needed shard is read per lookup.
 #   0..3     magic "NFK3"
 #   4..6     N         (3 b254 bytes)
 #   7..10    M         (4 b254 bytes)
-#   11..13   keyTotal  (3 b254 bytes)
-#   14..16   valTotal  (3 b254 bytes)
-#   17       format revision byte: '2' (0x32) — parameterized field widths
-#   18       fpW       (1 b254 byte: digit = width in bytes, 1..4)
-#   19       koffW     (1 b254 byte: 1..4)
-#   20       klenW     (1 b254 byte: 1..3)
-#   21       vlenW     (1 b254 byte: 1..3)
-#   22..63   spaces (header is 64 bytes)
-#   64..     M entries of EW bytes, EW = fpW + koffW + klenW + vlenW
+#   11       format revision byte: '5' (0x35)
+#   12       fpW       (1 b254 byte: digit = width in bytes, 1..4)
+#   13       koffW     (1 b254 byte: 1..4)
+#   14       klenW     (1 b254 byte: 1..3)
+#   15       vlenW     (1 b254 byte: 1..3)
+#   16..     M entries of EW bytes, EW = fpW + koffW + klenW + vlenW
 #            (7..14), fields at entry offsets:
 #            fp @0 (fpW) | keyOff @fpW (koffW) | keyLen @fpW+koffW (klenW)
 #            | valLen @fpW+koffW+klenW (vlenW)
@@ -62,8 +59,8 @@ byte Nix's readFile rejects). kv3.nix decodes a field byte via the static
 nfd3-table.nix attrset (byte 1-char string -> digit), imported once per
 eval (import cache); the table is a format constant, not file data.
 
-Limits (builder-enforced): N, keyTotal, valTotal < 254^3; per-key/value
-lengths < 254^3 (widths capped at 3 bytes); M and keyOff < 254^4 (widths
+Limits (builder-enforced): N and per-key/value lengths
+< 254^3 (widths capped at 3 bytes); M and keyOff < 254^4 (widths
 capped at 4 bytes); no key or value may contain a NUL byte. Entry field
 widths (fpW, koffW, klenW, vlenW) are the minimum that fit the table's
 maximum fp / key offset / key length / value length, stored once in the
@@ -82,17 +79,17 @@ import os
 import sys
 
 MAGIC = b"NFK3"
-REV = 50                              # format revision byte: '2'
-H = 64
+REV = 53                              # format revision byte: '5'
+H = 16
 T0 = H                                # index region start (table is static)
 FPW = 4                               # fingerprint field width (b254)
 FO = 4                               # M / keyOff field width (b254)
-FL = 3                               # N / totals / key|value len field width
+FL = 3                               # N / key|value len field width
 B = 254
 MAX_FIELD3 = B ** FL - 1             # 16,387,063
 MAX_FIELD4 = B ** FO - 1             # 4,162,314,255
 
-# entry layout (revision 2): fp @0 (fpW) | keyOff @fpW (koffW)
+# entry layout: fp @0 (fpW) | keyOff @fpW (koffW)
 #   | keyLen @fpW+koffW (klenW) | valLen @fpW+koffW+klenW (vlenW)
 #   entry width EW = fpW + koffW + klenW + vlenW (7..14), widths in header
 
@@ -169,12 +166,8 @@ def build(pairs):
     # data region: interleaved (key, value, key, value, ...); a value
     # immediately follows its key, so only keyOff is stored per entry
     data_region = b"".join(kb + vb for kb, vb in zip(kb_list, vb_list))
-    key_total = sum(map(len, kb_list))
-    val_total = sum(map(len, vb_list))
-    if key_total > MAX_FIELD3 or val_total > MAX_FIELD3:
-        raise ValueError("key/value data region too large")
 
-    # Field widths (revision 2): the smallest per-field byte widths that
+    # Field widths: the smallest per-field byte widths that
     # fit this table's maxima, stored once in the header.
     max_klen = max(map(len, kb_list)) if kb_list else 0
     max_vlen = max(map(len, vb_list)) if vb_list else 0
@@ -213,11 +206,8 @@ def build(pairs):
         MAGIC
         + enc(n, FL)
         + enc(m, FO)
-        + enc(key_total, FL)
-        + enc(val_total, FL)
         + bytes([REV, FPW + 1, koffW + 1, klenW + 1, vlenW + 1])
     )
-    header += b" " * (H - len(header))
     assert len(header) == H
 
     o_koff = FPW
@@ -242,11 +232,11 @@ def build(pairs):
     return blob
 
 def header_widths(data):
-    """(fpW, koffW, klenW, vlenW) from a revision-2 header, validated."""
-    fpW = data[18] - 1
-    koffW = data[19] - 1
-    klenW = data[20] - 1
-    vlenW = data[21] - 1
+    """(fpW, koffW, klenW, vlenW) from the header, validated."""
+    fpW = data[12] - 1
+    koffW = data[13] - 1
+    klenW = data[14] - 1
+    vlenW = data[15] - 1
     if not (1 <= fpW <= FO and 1 <= koffW <= FO
             and 1 <= klenW <= FL and 1 <= vlenW <= FL):
         raise ValueError(
@@ -264,25 +254,15 @@ def parse(path):
         raise ValueError(f"bad magic: {data[:4]!r}")
     n = dec(data[4:7], FL)
     m = dec(data[7:11], FO)
-    key_total = dec(data[11:14], FL)
-    val_total = dec(data[14:17], FL)
     if m < n:
         raise ValueError(f"table size {m} < entry count {n}")
-    if data[17] != REV:
-        raise ValueError(f"bad revision byte: {data[17]:#04x}")
+    if data[11] != REV:
+        raise ValueError(f"bad revision byte: {data[11]:#04x}")
     fpW, koffW, klenW, vlenW = header_widths(data)
-    if data[22:H] != b" " * (H - 22):
-        raise ValueError("header reserved region not spaces")
     if 0 in data:
         raise ValueError("file contains NUL (invalid for Nix readFile)")
     ew = fpW + koffW + klenW + vlenW
     o_koff, o_klen, o_vlen = fpW, fpW + koffW, fpW + koffW + klenW
-    d0 = T0 + ew * m
-    if len(data) != d0 + key_total + val_total:
-        raise ValueError(
-            f"size mismatch: file {len(data)}, "
-            f"expected {d0 + key_total + val_total}"
-        )
     out = []
     for s in range(m):
         e = T0 + ew * s

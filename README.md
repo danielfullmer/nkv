@@ -59,28 +59,25 @@ The target is Nix 2.34.7 with a stripped-down builtin set. What is missing shape
 Open addressing: one `sha256` per lookup, a 24-bit fingerprint, and linear probing over a power-of-two table at load ≤ 0.8. Numeric fields are **b254** bytes, 1–4 wide — per-field widths are chosen at build time and stored in the header (one byte per digit, `byte = digit + 1`, big-endian digits) — so every file byte is `0x01`–`0xFF` and the file never contains the one byte Nix's `readFile` rejects.
 
 ```
-offset 0              header, 64 bytes
-offset 64             index region, M × W bytes (W = 9–10 per file)
-offset 64 + M·W       data region (interleaved, variable)
+offset 0              header, 16 bytes
+offset 16             index region, M × W bytes (W = 9–10 per file)
+offset 16 + M·W       data region (interleaved, variable)
 ```
 
-**Header (64 bytes):**
+**Header (16 bytes):**
 
 | field      | offset | width | meaning                                          |
 |------------|-------:|------:|--------------------------------------------------|
 | magic      | 0      | 4     | `NFK3`                                           |
 | `N`        | 4      | 3     | entry count (b254)                               |
 | `M`        | 7      | 4     | table size, power of two (b254)                  |
-| `keyTotal` | 11     | 3     | total key bytes (b254)                           |
-| `valTotal` | 14     | 3     | total value bytes (b254)                         |
-| revision   | 17     | 1     | `2` (0x32) — parameterized field widths          |
-| `fpW`      | 18     | 1     | width of `fp` in b254 bytes (1–4)                |
-| `koffW`    | 19     | 1     | width of `keyOff` (1–4)                          |
-| `klenW`    | 20     | 1     | width of `keyLen` (1–3)                          |
-| `vlenW`    | 21     | 1     | width of `valLen` (1–3)                          |
-| —          | 22     | 42    | reserved (spaces)                                |
+| revision   | 11     | 1     | `5` (0x35) — no data-region totals               |
+| `fpW`      | 12     | 1     | width of `fp` in b254 bytes (1–4)                |
+| `koffW`    | 13     | 1     | width of `keyOff` (1–4)                          |
+| `klenW`    | 14     | 1     | width of `keyLen` (1–3)                          |
+| `vlenW`    | 15     | 1     | width of `valLen` (1–3)                          |
 
-**Index region** — one `W`-byte entry per table slot `s` at offset `64 + W·s` (`W = fpW + koffW + klenW + vlenW`; 9–10 in current builds):
+**Index region** — one `W`-byte entry per table slot `s` at offset `16 + W·s` (`W = fpW + koffW + klenW + vlenW`; 9–10 in current builds):
 
 | field    | offset | width | meaning                                             |
 |----------|-------:|------:|-----------------------------------------------------|
@@ -103,8 +100,8 @@ Invariants:
 
 - `s0 = int(h[56:64], 16) AND (M − 1)`; linear probing, bounded by `M` steps. A fingerprint hit is confirmed by a byte-for-byte key compare, so a 24-bit collision (≈ 0.012 expected false fingerprint matches per lookup at 200k keys; ≈ 1,190 colliding key pairs total) costs one extra key read — never a wrong value.
 - `M = next_pow2(max(16, ⌈1.25·N⌉))` → load ≤ 0.8 (fixed; no factor flag).
-- b254 width limits (builder-enforced): `N` / `keyTotal` / `valTotal` / key length / value length < 254³ (~16.4 MB); `M` and offsets < 254⁴ (~4.16 GB); no NUL.
-- Sizes: 1,005 keys → 78,990 B; 50,000 → 3,653,126 B; 200,000 → 14,700,716 B = 1.05× the 13.9 MB JSON (the index region is ~16% of the large file).
+- b254 width limits (builder-enforced): `N` / key length / value length < 254³ (~16.4 MB); `M` and offsets < 254⁴ (~4.16 GB); no NUL.
+- Sizes: 1,005 keys → 78,942 B; 50,000 → 3,653,078 B; 200,000 → 14,700,668 B = 1.05× the 13.9 MB JSON (the index region is ~16% of the large file).
 - Values are opaque: any UTF-8 minus NUL may be stored. String values are returned as-is by `get`; when a value holds a JSON document, `getJson`/`getOrJson` decode it with `builtins.fromJSON` at lookup time (a miss is still `null`).
 
 ### Optional file sharding
@@ -129,7 +126,7 @@ lookup(key):
   fp = int(h[0:6], 16) + 1              # 24-bit fingerprint
   s  = int(h[56:64], 16) AND (M - 1)    # initial slot
   for i in 0..M:                        # bounded walk
-    e    = 64 + W * (s + i) AND (M - 1)  # W from the header; (bitAnd wrap, M a power of two)
+    e    = 16 + W * (s + i) AND (M - 1)  # W from the header; (bitAnd wrap, M a power of two)
     efp  = b254-decode(entry[e .. e+fpW]) # fpW static-table lookups
     if efp = 0: return null              # unused slot: key absent
     if efp ≠ fp: continue                # fingerprint miss: probe on
@@ -164,8 +161,8 @@ python3 build_db3.py --write-table nfd3-table.nix
 
 - Input: a JSON object with string keys and **arbitrary JSON values** — string values are stored raw; non-string values are stored as compact JSON documents, which `getJson`/`getOrJson` decode back.
 - Sharded mode writes `DIR/<h[24:24+d]>.nfd3` for every shard, including empty ones (see the sharding subsection); single-file mode is unchanged.
-- `--check` re-parses the file(s) independently — validates magic, revision byte, field widths, reserved header spaces, absence of NUL, and the exact file size — and re-probes every key through an independent Python probe plus a known miss. In sharded mode, shard membership is re-derived and every key is re-probed through the shard files.
-- Width guards: `N` / totals / lengths < 254³ bytes, `M` / offsets < 254⁴, no NUL.
+- `--check` re-parses the file(s) independently — validates magic, revision byte, field widths, reserved header spaces, absence of NUL — and re-probes every key through an independent Python probe plus a known miss. In sharded mode, shard membership is re-derived and every key is re-probed through the shard files.
+- Width guards: `N` / key length / value length < 254³ bytes, `M` / offsets < 254⁴, no NUL.
 - Single-file output is byte-identical across rebuilds (no timestamps, insertion-order data region).
 
 `gen_data.py` generates the deterministic test datasets (1k / 50k / 200k keys, seeded RNG).
@@ -179,7 +176,7 @@ let db = (import ./kv3.nix) ./data/large.nfd3;
 in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
 ```
 
-`get` returns `null` on a miss. `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string when the value holds a JSON document (a miss still returns `null`). The module asserts the `NFK3` magic, the revision byte, and the exact file size at import.
+`get` returns `null` on a miss. `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string when the value holds a JSON document (a miss still returns `null`). The module asserts the `NFK3` magic, the revision byte, and the field widths at import.
 
 Sharded NFK v3 (`kv3s.nix`) takes a directory built with `--shards` (`digits` must match the shard count):
 
