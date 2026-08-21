@@ -13,6 +13,11 @@ only). Three methods compared:
              there is no whole-file load; n=1 is the intercept point)
 
 Queries: "hello" + 199 strided samples of the sorted attr names, per file.
+Time split: the fixed Nix load floor is measured once as an empty eval
+(`nix eval --impure --raw --expr '""'`, same flags, no expression
+work); per method, work = total - baseline, paired by run index.
+The JSON carries a top-level baseline plus both totals and work
+times for every method.
 
 Usage: bench.py [runs_per_config]
 """
@@ -99,8 +104,18 @@ def main():
          os.path.join(HERE, "history_shards")),
     ]
     out = {"runs_per_config": runs, "n_queries": NS,
-           "note": "cold process per eval; ms = wall time of nix eval",
+           "note": ("cold process per eval; ms = wall time of nix eval; "
+                    "work = total - baseline, paired by run index"),
            "configs": {}}
+    # Nix load floor: same flags, empty expression — everything up to
+    # the expression itself (process spawn, nix runtime + evaluator
+    # init, empty output). Subtracted per run from each method's total.
+    base = [run_eval('""')[0] for _ in range(runs)]
+    out["baseline"] = {"expr": '""',
+                       "label": "nix load floor (empty eval, same flags)",
+                       "ms_min": round(min(base), 1),
+                       "ms_median": round(statistics.median(base), 1),
+                       "ms_all": [round(x, 1) for x in base]}
     for name, j, t, flat, sd in files:
         qs = queries_for(flat)
         for n in NS:
@@ -113,14 +128,17 @@ def main():
             for m, e in exprs.items():
                 dts = []
                 outlen = 0
-                for _ in range(runs):
+                for r in range(runs):
                     dt, outp = run_eval(e)
                     dts.append(dt)
                     outlen = len(outp)
                     assert outp.strip(), "empty output — result not forced?"
+                works = [dts[r] - base[r] for r in range(runs)]
                 res[m] = {"ms_min": round(min(dts), 1),
                           "ms_median": round(statistics.median(dts), 1),
                           "ms_all": [round(x, 1) for x in dts],
+                          "work_ms_min": round(min(works), 1),
+                          "work_ms_median": round(statistics.median(works), 1),
                           "out_bytes": outlen}
             # harness invariant: every method answers the same queries
             # (n=0 is a load-only point with different output by design)
@@ -131,7 +149,10 @@ def main():
             out["configs"][cfg] = res
             print(cfg + ": " + "  ".join(
                 f"{m} min={res[m]['ms_min']} med={res[m]['ms_median']}"
+                f" work={res[m]['work_ms_median']}"
                 for m in res), flush=True)
+    print(f"baseline (nix load): min={out['baseline']['ms_min']} "
+          f"med={out['baseline']['ms_median']}", flush=True)
     with open(os.path.join(HERE, "bench_results.json"), "w") as f:
         json.dump(out, f, indent=2)
     print("wrote bench_results.json")

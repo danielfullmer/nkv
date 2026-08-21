@@ -23,10 +23,10 @@ correctness fix — NFK v3 is sound; these are performance and robustness.
 
 | component | large (16.3 MB, 200k keys) | multiverse (5.7–7.7 MB, 31,904 attrs) |
 |---|---|---|
-| `nix eval` startup (no work) | ~31–34 ms | ~31–34 ms |
-| nfk3 n = 1 (readFile + import + 1 lookup) | 68.6 ms | 44.5 / 42.6 ms |
-| nfk3s n = 1 (one shard read + 1 lookup) | 34.4 ms | 33.9 / 35.1 ms |
-| fromJSON n = 1 (readFile + parse + 1 lookup) | 216.7 ms | 156.0 / 258.9 ms |
+| `nix eval` load floor (cold empty eval, measured) | 33.7 ms median (min 29.4) | 32.9 ms median (min 31.6) |
+| nfk3 n = 1 (readFile + import + 1 lookup) | 62.1 total (work 28.4) | 45.3 / 46.1 (work 13.1 / 12.5) |
+| nfk3s n = 1 (one shard read + 1 lookup) | 34.6 (work 1.6) | 34.4 / 35.2 (work 2.7 / 2.1) |
+| fromJSON n = 1 (readFile + parse + 1 lookup) | 211.8 (work 178.1) | 159.9 / 257.9 (work 126.2 / 226.3) |
 
 A single nfk3 lookup is ~50 interpreter operations:
 
@@ -47,8 +47,10 @@ lookup — Tier 2/3 attack this).
 5.7/16.3 MB even for one lookup. Split the table by a second digest slice
 (`sha256[24:24+d]` → 16/256/4096 shards):
 
-- multiverse: ~22 KB per shard → single-lookup eval ~34 ms (fromJSON ~156–259);
-- 200k: ~80 KB per shard → single-lookup eval 34.4 ms (fromJSON ~217);
+- multiverse: ~22 KB per shard → single-lookup eval 34–35 ms total (work ~2
+  ms; fromJSON total ~160 / ~258);
+- 200k: ~80 KB per shard → single-lookup eval 34.6 ms (work 1.6 ms;
+  fromJSON 211.8 total, work 178.1);
 - wins hardest at low N (the lock-file case: N = 30 touches ~27 shards ≈ 1–3
   ms of reads); as N → full-scan, most shards are imported and the advantage
   narrows — that regime belongs to single-file (or `fromJSON` at bulk scan),
@@ -67,34 +69,38 @@ NFK v3 file, N = 0, M = 16); `kv3s.nix` selects the shard by
 shard file is read until a lookup is forced). The static `nfd3-table.nix`
 is imported once per eval no matter how many shards are touched, so a shard
 import is just readFile + header asserts. Measured (multiverse, 256 shards,
-median of 3 cold `nix eval`s, `multiverse-faster/bench.py`):
+median of 3 cold `nix eval`s, `total (work)` ms, `multiverse-faster/bench.py`):
 
 | n lookups/eval | fromJSON | nfk3 (single file) | nfk3s (256 shards) |
 |---:|---:|---:|---:|
 | **versions** | | | |
-| 1 | 156.0 ms | 44.5 ms | **33.9 ms** |
-| 5 | 155.5 ms | 47.3 ms | 34.0 ms |
-| 10 | 158.4 ms | 42.9 ms | 34.8 ms |
-| 30 | 157.6 ms | 46.2 ms | 38.6 ms |
-| 100 | 157.3 ms | 47.2 ms | 45.9 ms |
-| 200 | 159.0 ms | 49.5 ms | 53.5 ms |
+| 1 | 159.9 (126.2) | 45.3 (13.1) | **34.4 (2.7)** |
+| 5 | 157.4 (124.6) | 46.0 (12.8) | 34.6 (1.8) |
+| 10 | 156.7 (124.2) | 43.4 (11.8) | 33.8 (2.2) |
+| 30 | 168.4 (136.8) | 45.3 (12.5) | **39.5 (6.6)** |
+| 100 | 158.3 (125.9) | 47.9 (15.0) | 49.1 (16.3) |
+| 200 | 167.4 (134.5) | 49.2 (16.4) | 50.8 (17.2) |
 | **history** | | | |
-| 1 | 258.9 ms | 42.6 ms | **35.1 ms** |
-| 5 | 255.9 ms | 48.4 ms | 35.0 ms |
-| 10 | 256.6 ms | 48.4 ms | 36.6 ms |
-| 30 | 256.6 ms | 47.7 ms | 36.1 ms |
-| 100 | 256.9 ms | 49.3 ms | 46.6 ms |
-| 200 | 259.7 ms | 48.1 ms | 60.4 ms |
+| 1 | 257.9 (226.3) | 46.1 (12.5) | **35.2 (2.1)** |
+| 5 | 257.0 (225.4) | 45.6 (14.0) | 34.6 (0.9) |
+| 10 | 259.9 (228.3) | 51.0 (18.2) | 36.0 (3.9) |
+| 30 | 265.5 (231.8) | 47.4 (13.8) | **36.5 (3.8)** |
+| 100 | 262.2 (228.5) | 52.3 (18.7) | **45.5 (11.8)** |
+| 200 | 267.1 (233.4) | 55.0 (22.6) | 53.2 (20.3) |
 
-The single-lookup intercept sits at ~34 ms — within ~3 ms of the bare
-`nix eval` startup floor (~31 ms) — i.e. 4.6–7.4× faster than `fromJSON`.
-Crossover nfk3s vs nfk3: sharded wins through ~100 lookups (45.9 vs 47.2 on
-versions, 46.6 vs 49.3 on history at n = 100) and single-file takes over by
-~200 (53.5 vs 49.5, 60.4 vs 48.1 at n = 200). The sharded slope rises
-(~0.1–0.2 ms per new distinct shard imported) as queries spread across the
-256 shards. On the 16.3 MB 200k-key table, single-file's 16 MB readFile
-keeps nfk3s ahead across the whole measured range (55.9 vs 74.5 ms at
-n = 200); the crossover is beyond 200 lookups there.
+The single-lookup intercept sits at 34.4/35.2 ms total (work 2.7/2.1 ms) —
+within ~2 ms of the measured empty-eval floor (32.9 ms median) — i.e.
+~47× (versions) / ~110× (history) the `fromJSON` data work. Crossover
+nfk3s vs nfk3: on versions, sharded is ahead through n = 30 (39.5 vs 45.3
+total; work 6.6 vs 12.5) and
+single-file takes over by n = 100 (49.1 vs 47.9; work 16.3 vs 15.0) —
+crossover ~30–100; on history sharded is still ahead at n = 200 (53.2 vs
+55.0 total; work 20.3 vs 22.6) — crossover beyond 200. The sharded slope
+rises (~0.1–0.2 ms per new distinct shard imported) as queries spread across
+the 256 shards: work 2.7 → 17.2 ms (versions) and 2.1 → 20.3 ms (history)
+by n = 200. On the 16.3 MB 200k-key table, single-file's 16 MB readFile
+keeps nfk3s ahead across the whole measured range (55.4 vs 66.5 ms total at
+n = 200; work 21.7 vs 34.6); the crossover is beyond 200 lookups there.
 
 **History of the fix** (2026-08-20): the first `kv3s.nix` rebuilt the decode
 table at every shard import (a 255×`//` fold, ~0.8 ms/shard), which made the
@@ -184,9 +190,8 @@ Any of these landing re-opens the corresponding suggestion above:
 
 For a lock file that re-pins the same ~30 attrs, build a **micro-table of
 exactly those 30 keys** (M = 64, ~10 KB): the whole lock answers in ~35 ms
-vs ~156 ms for `fromJSON` on the 4.8 MB `versions_flat.json` (measured,
+vs ~157–160 ms for `fromJSON` on the 4.8 MB `versions_flat.json` (measured,
 `multiverse-faster/`). `build_db3.py` already accepts arbitrary JSON input —
-no new code.
 
 ## Priority (updated 2026-08-20)
 
@@ -195,8 +200,8 @@ no new code.
 2. **Tier 3** — rides along with Tier 2 (same hex-decoding site).
 3. Hardening items — do whenever the builder is touched.
 4. ~~Tier 1 (sharding)~~ — **implemented**: `build_db3.py --shards` +
-   `kv3s.nix`. Use for ≲ ~100 lookups/eval on 5–8 MB tables; single-file NFK
-   v3 is marginally faster beyond ~200; on the 16 MB table sharded wins
-   across the measured range.
+   `kv3s.nix`. Use for lock-file-style workloads (crossover ~30–100
+   lookups/eval on versions, ~100–200 on history); on the 16 MB table
+   sharded wins across the measured range.
 5. ~~Static decode table~~ — **implemented** (2026-08-20): `nfd3-table.nix`,
    one import per eval.
