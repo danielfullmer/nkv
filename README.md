@@ -403,6 +403,7 @@ All five custom formats beat `fromJSON` cold at realistic eval sizes (1.69×–3
 | `bench.py`, `bench_marginal.py` | benchmark harnesses, parameterized per format (`--kv/--ext/--label/--out`) |
 | `REPORT.md` | full design + benchmark + trade-off write-up |
 | `multiverse-faster/` | real-world workload: fkzakaria's nixpkgs-multiverse index (31,904 attrs) converted to NFK v3, cold-eval benchmark vs `fromJSON` (results: NFK3 3.2–5.6× faster at every query count) |
+| `suggestions.md` | NFK v3 improvement proposals (sharding, v4 hex-fingerprint slot, cheaper hex decode, builder hardening), 2026-08-20 |
 
 ## Known limitations
 
