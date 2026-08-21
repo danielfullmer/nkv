@@ -13,669 +13,669 @@
   "configs": {
     "versions/n=0": {
       "fromJSON": {
-        "ms_min": 146.8,
-        "ms_median": 157.9,
+        "ms_min": 147.3,
+        "ms_median": 157.4,
         "ms_all": [
-          167.6,
-          146.8,
-          159.6,
-          155.7,
-          157.3,
-          157.9,
-          165.4
+          157.4,
+          158.7,
+          160.4,
+          161.1,
+          155.5,
+          147.3,
+          154.2
         ],
-        "work_ms_min": 113.1,
-        "work_ms_median": 123.6,
+        "work_ms_min": 114.9,
+        "work_ms_median": 126.8,
         "out_bytes": 4
       },
       "nfk3": {
-        "ms_min": 41.9,
-        "ms_median": 43.4,
+        "ms_min": 41.3,
+        "ms_median": 42.9,
         "ms_all": [
+          41.6,
+          43.6,
+          42.4,
+          42.9,
           43.4,
-          52.2,
-          47.4,
-          42.5,
-          42.6,
-          44.0,
-          41.9
+          41.3,
+          44.0
         ],
-        "work_ms_min": 7.8,
-        "work_ms_median": 8.9,
+        "work_ms_min": 8.8,
+        "work_ms_median": 10.1,
         "out_bytes": 5
       }
     },
     "versions/n=1": {
       "fromJSON": {
-        "ms_min": 157.9,
-        "ms_median": 160.5,
+        "ms_min": 151.8,
+        "ms_median": 157.2,
         "ms_all": [
-          167.6,
-          160.0,
-          158.7,
-          160.5,
-          163.0,
-          157.9,
-          168.6
+          154.5,
+          156.3,
+          161.6,
+          157.2,
+          159.7,
+          151.8,
+          166.7
         ],
-        "work_ms_min": 122.7,
-        "work_ms_median": 126.9,
+        "work_ms_min": 119.4,
+        "work_ms_median": 123.9,
         "out_bytes": 84
       },
       "nfk3": {
-        "ms_min": 34.9,
-        "ms_median": 46.0,
+        "ms_min": 42.8,
+        "ms_median": 43.8,
         "ms_all": [
-          50.0,
-          54.9,
-          44.2,
-          34.9,
-          48.4,
-          46.0,
-          44.5
+          43.3,
+          42.8,
+          43.4,
+          46.5,
+          44.7,
+          44.5,
+          43.8
         ],
-        "work_ms_min": 1.3,
-        "work_ms_median": 12.5,
+        "work_ms_min": 8.1,
+        "work_ms_median": 12.6,
         "out_bytes": 84
       },
       "nfk3s": {
-        "ms_min": 24.8,
-        "ms_median": 33.5,
+        "ms_min": 31.3,
+        "ms_median": 35.3,
         "ms_all": [
-          34.6,
-          32.5,
-          24.8,
-          31.7,
-          33.6,
-          35.7,
-          33.5
+          36.4,
+          33.8,
+          31.3,
+          35.3,
+          35.4,
+          35.5,
+          33.6
         ],
-        "work_ms_min": -11.3,
-        "work_ms_median": -0.9,
+        "work_ms_min": -0.9,
+        "work_ms_median": 3.1,
         "out_bytes": 84
       }
     },
     "versions/n=5": {
       "fromJSON": {
-        "ms_min": 153.9,
-        "ms_median": 157.1,
+        "ms_min": 153.7,
+        "ms_median": 155.9,
         "ms_all": [
-          155.4,
-          157.1,
-          153.9,
-          159.5,
-          188.1,
-          160.6,
-          157.1
+          184.4,
+          155.1,
+          156.9,
+          154.8,
+          155.9,
+          153.7,
+          157.6
         ],
-        "work_ms_min": 117.9,
-        "work_ms_median": 123.5,
+        "work_ms_min": 120.3,
+        "work_ms_median": 122.6,
         "out_bytes": 442
       },
       "nfk3": {
-        "ms_min": 35.8,
-        "ms_median": 44.0,
+        "ms_min": 34.8,
+        "ms_median": 42.7,
         "ms_all": [
-          44.2,
+          40.2,
+          34.8,
+          42.7,
           44.0,
-          42.4,
-          44.5,
-          51.8,
-          43.1,
-          35.8
+          41.3,
+          45.8,
+          43.4
         ],
-        "work_ms_min": 1.7,
-        "work_ms_median": 9.5,
+        "work_ms_min": 0.1,
+        "work_ms_median": 10.1,
         "out_bytes": 442
       },
       "nfk3s": {
         "ms_min": 34.1,
-        "ms_median": 35.1,
+        "ms_median": 34.7,
         "ms_all": [
-          35.1,
-          37.8,
-          34.1,
-          35.9,
+          37.0,
           34.7,
-          34.2,
-          36.1
+          34.1,
+          36.7,
+          35.2,
+          34.7,
+          34.7
         ],
-        "work_ms_min": -1.9,
-        "work_ms_median": 0.7,
+        "work_ms_min": -0.0,
+        "work_ms_median": 2.9,
         "out_bytes": 442
       }
     },
     "versions/n=10": {
       "fromJSON": {
-        "ms_min": 154.1,
-        "ms_median": 157.8,
+        "ms_min": 152.9,
+        "ms_median": 157.6,
         "ms_all": [
-          161.5,
-          159.0,
-          156.0,
-          157.8,
-          169.5,
-          156.1,
-          154.1
+          159.1,
+          157.6,
+          157.9,
+          154.2,
+          156.4,
+          152.9,
+          159.8
         ],
-        "work_ms_min": 120.0,
-        "work_ms_median": 124.2,
+        "work_ms_min": 120.4,
+        "work_ms_median": 123.1,
         "out_bytes": 1025
       },
       "nfk3": {
-        "ms_min": 43.6,
-        "ms_median": 44.5,
+        "ms_min": 33.9,
+        "ms_median": 43.5,
         "ms_all": [
-          46.3,
-          43.8,
-          49.2,
-          44.2,
+          33.9,
+          43.0,
+          37.6,
           44.5,
-          43.6,
-          45.2
+          44.7,
+          44.6,
+          43.5
         ],
-        "work_ms_min": 10.1,
-        "work_ms_median": 10.6,
+        "work_ms_min": 3.3,
+        "work_ms_median": 11.4,
         "out_bytes": 1025
       },
       "nfk3s": {
-        "ms_min": 33.4,
-        "ms_median": 35.6,
+        "ms_min": 35.1,
+        "ms_median": 35.9,
         "ms_all": [
-          35.6,
+          35.5,
+          36.4,
+          35.9,
           36.1,
-          33.4,
-          35.0,
-          37.5,
-          35.2,
-          35.9
+          35.1,
+          38.7,
+          35.5
         ],
-        "work_ms_min": -2.6,
-        "work_ms_median": 1.7,
+        "work_ms_min": 1.6,
+        "work_ms_median": 4.8,
         "out_bytes": 1025
       }
     },
     "versions/n=30": {
       "fromJSON": {
-        "ms_min": 151.9,
-        "ms_median": 158.6,
+        "ms_min": 155.5,
+        "ms_median": 157.4,
         "ms_all": [
-          157.9,
-          158.6,
-          173.8,
-          160.6,
-          164.5,
-          151.9,
-          157.6
+          164.7,
+          156.5,
+          157.4,
+          155.5,
+          156.3,
+          157.6,
+          169.7
         ],
-        "work_ms_min": 118.4,
-        "work_ms_median": 125.0,
+        "work_ms_min": 121.7,
+        "work_ms_median": 125.1,
         "out_bytes": 7591
       },
       "nfk3": {
-        "ms_min": 44.3,
-        "ms_median": 45.4,
+        "ms_min": 34.1,
+        "ms_median": 43.9,
         "ms_all": [
-          44.3,
-          46.6,
-          47.1,
-          45.4,
-          53.2,
-          45.0,
-          45.0
+          40.1,
+          43.9,
+          55.4,
+          45.3,
+          48.4,
+          34.1,
+          43.8
         ],
-        "work_ms_min": 8.9,
+        "work_ms_min": 1.7,
         "work_ms_median": 11.4,
         "out_bytes": 7591
       },
       "nfk3s": {
-        "ms_min": 35.8,
-        "ms_median": 36.7,
+        "ms_min": 36.5,
+        "ms_median": 37.9,
         "ms_all": [
-          39.9,
+          38.8,
+          37.9,
+          38.5,
+          38.5,
+          37.5,
           36.5,
-          36.6,
-          35.8,
-          37.6,
-          36.7,
-          37.6
+          37.9
         ],
-        "work_ms_min": 0.6,
-        "work_ms_median": 3.1,
+        "work_ms_min": 3.2,
+        "work_ms_median": 4.6,
         "out_bytes": 7591
       }
     },
     "versions/n=100": {
       "fromJSON": {
-        "ms_min": 155.8,
-        "ms_median": 159.9,
+        "ms_min": 153.8,
+        "ms_median": 157.9,
         "ms_all": [
-          161.2,
-          155.8,
-          159.9,
-          158.8,
-          158.0,
-          167.9,
-          178.2
+          164.9,
+          157.5,
+          159.2,
+          153.8,
+          157.9,
+          158.7,
+          157.4
         ],
-        "work_ms_min": 122.1,
-        "work_ms_median": 125.2,
+        "work_ms_min": 119.9,
+        "work_ms_median": 126.3,
         "out_bytes": 18374
       },
       "nfk3": {
-        "ms_min": 45.2,
-        "ms_median": 47.2,
+        "ms_min": 35.5,
+        "ms_median": 46.1,
         "ms_all": [
-          48.0,
-          46.7,
-          47.2,
-          47.2,
           45.8,
-          47.7,
-          45.2
+          46.1,
+          43.7,
+          35.5,
+          46.6,
+          48.8,
+          55.0
         ],
-        "work_ms_min": 11.2,
-        "work_ms_median": 12.6,
+        "work_ms_min": 1.7,
+        "work_ms_median": 15.2,
         "out_bytes": 18374
       },
       "nfk3s": {
-        "ms_min": 43.4,
-        "ms_median": 44.6,
+        "ms_min": 40.8,
+        "ms_median": 42.5,
         "ms_all": [
-          43.4,
-          46.0,
-          44.8,
-          44.6,
-          53.2,
-          44.6,
-          43.6
+          42.6,
+          42.1,
+          46.1,
+          40.8,
+          42.5,
+          42.5,
+          43.2
         ],
-        "work_ms_min": 8.0,
-        "work_ms_median": 11.0,
+        "work_ms_min": 7.0,
+        "work_ms_median": 10.1,
         "out_bytes": 18374
       }
     },
     "versions/n=200": {
       "fromJSON": {
-        "ms_min": 158.8,
-        "ms_median": 160.4,
+        "ms_min": 155.4,
+        "ms_median": 158.3,
         "ms_all": [
-          160.4,
-          159.4,
-          158.8,
-          166.3,
-          159.8,
-          182.4,
+          157.9,
+          155.4,
+          159.0,
+          161.9,
+          158.3,
+          158.2,
           160.5
         ],
-        "work_ms_min": 122.8,
-        "work_ms_median": 125.8,
+        "work_ms_min": 120.7,
+        "work_ms_median": 127.2,
         "out_bytes": 29378
       },
       "nfk3": {
-        "ms_min": 46.6,
-        "ms_median": 49.6,
+        "ms_min": 44.2,
+        "ms_median": 46.5,
         "ms_all": [
-          46.6,
-          56.1,
-          51.0,
+          46.5,
+          45.8,
+          47.9,
+          46.4,
           47.4,
-          49.6,
-          49.0,
-          49.6
+          44.2,
+          52.1
         ],
         "work_ms_min": 11.1,
-        "work_ms_median": 15.5,
+        "work_ms_median": 14.1,
         "out_bytes": 29378
       },
       "nfk3s": {
-        "ms_min": 51.7,
-        "ms_median": 53.9,
+        "ms_min": 50.1,
+        "ms_median": 50.7,
         "ms_all": [
-          55.5,
-          52.3,
-          74.8,
-          51.7,
-          60.6,
-          52.1,
-          53.9
+          50.4,
+          51.2,
+          50.3,
+          50.7,
+          50.1,
+          51.1,
+          52.7
         ],
-        "work_ms_min": 18.1,
-        "work_ms_median": 19.9,
+        "work_ms_min": 16.5,
+        "work_ms_median": 18.7,
         "out_bytes": 29378
       }
     },
     "history/n=0": {
       "fromJSON": {
-        "ms_min": 242.9,
+        "ms_min": 243.7,
         "ms_median": 254.9,
         "ms_all": [
-          249.4,
+          267.7,
+          251.8,
+          243.7,
+          272.5,
           254.9,
-          282.1,
-          253.3,
-          255.9,
-          242.9,
-          271.5
+          259.1,
+          252.8
         ],
-        "work_ms_min": 209.3,
-        "work_ms_median": 221.2,
+        "work_ms_min": 217.1,
+        "work_ms_median": 226.6,
         "out_bytes": 4
       },
       "nfk3": {
-        "ms_min": 44.8,
+        "ms_min": 45.2,
         "ms_median": 45.8,
         "ms_all": [
-          53.4,
-          45.5,
-          45.3,
-          47.5,
-          47.0,
-          44.8,
-          45.8
+          55.7,
+          45.8,
+          45.2,
+          45.4,
+          45.2,
+          48.7,
+          49.9
         ],
-        "work_ms_min": 9.3,
-        "work_ms_median": 11.9,
+        "work_ms_min": 11.1,
+        "work_ms_median": 16.3,
         "out_bytes": 5
       }
     },
     "history/n=1": {
       "fromJSON": {
-        "ms_min": 248.4,
-        "ms_median": 261.9,
+        "ms_min": 247.8,
+        "ms_median": 256.4,
         "ms_all": [
-          277.3,
-          265.1,
-          261.9,
-          271.6,
-          248.4,
-          258.8,
-          252.8
+          258.9,
+          269.8,
+          247.8,
+          252.7,
+          262.3,
+          254.9,
+          256.4
         ],
-        "work_ms_min": 214.4,
-        "work_ms_median": 225.9,
+        "work_ms_min": 218.8,
+        "work_ms_median": 228.3,
         "out_bytes": 147
       },
       "nfk3": {
-        "ms_min": 45.8,
-        "ms_median": 47.4,
+        "ms_min": 43.5,
+        "ms_median": 44.8,
         "ms_all": [
-          48.3,
-          45.8,
-          47.4,
-          47.1,
-          48.5,
-          48.5,
-          45.8
+          45.6,
+          45.7,
+          43.5,
+          44.6,
+          44.1,
+          44.8,
+          45.0
         ],
-        "work_ms_min": 11.4,
-        "work_ms_median": 12.8,
+        "work_ms_min": 10.7,
+        "work_ms_median": 12.4,
         "out_bytes": 147
       },
       "nfk3s": {
-        "ms_min": 33.8,
-        "ms_median": 34.4,
+        "ms_min": 30.3,
+        "ms_median": 33.3,
         "ms_all": [
-          34.2,
-          34.1,
-          33.8,
-          34.5,
-          35.8,
-          34.4,
-          42.8
+          33.3,
+          34.8,
+          36.2,
+          30.3,
+          32.7,
+          31.8,
+          34.7
         ],
-        "work_ms_min": -2.3,
-        "work_ms_median": 0.8,
+        "work_ms_min": -3.5,
+        "work_ms_median": 0.0,
         "out_bytes": 147
       }
     },
     "history/n=5": {
       "fromJSON": {
-        "ms_min": 258.5,
-        "ms_median": 265.7,
+        "ms_min": 252.4,
+        "ms_median": 256.0,
         "ms_all": [
-          265.8,
-          258.5,
-          259.2,
-          271.7,
-          264.2,
-          265.7,
-          278.4
+          252.4,
+          258.4,
+          254.1,
+          255.0,
+          266.0,
+          256.0,
+          266.1
         ],
-        "work_ms_min": 223.2,
-        "work_ms_median": 230.3,
+        "work_ms_min": 221.1,
+        "work_ms_median": 223.7,
         "out_bytes": 676
       },
       "nfk3": {
-        "ms_min": 42.9,
-        "ms_median": 47.0,
+        "ms_min": 44.7,
+        "ms_median": 46.5,
         "ms_all": [
-          62.6,
-          42.9,
-          90.1,
-          48.1,
-          45.5,
-          43.8,
-          47.0
+          44.7,
+          47.1,
+          46.7,
+          45.3,
+          57.7,
+          46.5,
+          45.3
         ],
-        "work_ms_min": 9.3,
-        "work_ms_median": 13.0,
+        "work_ms_min": 11.4,
+        "work_ms_median": 14.1,
         "out_bytes": 676
       },
       "nfk3s": {
-        "ms_min": 32.5,
-        "ms_median": 35.6,
+        "ms_min": 33.6,
+        "ms_median": 33.9,
         "ms_all": [
-          52.9,
-          32.5,
-          35.4,
-          35.6,
-          36.0,
-          35.6,
-          35.7
+          34.0,
+          36.2,
+          34.8,
+          33.9,
+          33.9,
+          33.6,
+          33.8
         ],
-        "work_ms_min": -1.1,
-        "work_ms_median": 2.0,
+        "work_ms_min": 0.1,
+        "work_ms_median": 1.5,
         "out_bytes": 676
       }
     },
     "history/n=10": {
       "fromJSON": {
-        "ms_min": 258.6,
-        "ms_median": 261.3,
+        "ms_min": 251.1,
+        "ms_median": 256.2,
         "ms_all": [
-          278.2,
-          261.3,
-          259.9,
-          282.6,
-          309.1,
-          258.6,
-          261.2
+          259.5,
+          251.1,
+          269.1,
+          255.0,
+          257.4,
+          252.6,
+          256.2
         ],
-        "work_ms_min": 223.9,
-        "work_ms_median": 227.6,
+        "work_ms_min": 216.3,
+        "work_ms_median": 224.1,
         "out_bytes": 1545
       },
       "nfk3": {
-        "ms_min": 40.7,
-        "ms_median": 55.9,
+        "ms_min": 45.6,
+        "ms_median": 46.2,
         "ms_all": [
-          40.7,
-          79.0,
-          56.8,
-          55.9,
-          48.2,
-          52.8,
-          57.7
+          45.6,
+          46.2,
+          46.4,
+          46.1,
+          46.3,
+          45.8,
+          47.3
         ],
-        "work_ms_min": 5.3,
-        "work_ms_median": 20.8,
+        "work_ms_min": 11.4,
+        "work_ms_median": 13.3,
         "out_bytes": 1545
       },
       "nfk3s": {
-        "ms_min": 32.2,
-        "ms_median": 35.5,
+        "ms_min": 33.1,
+        "ms_median": 34.3,
         "ms_all": [
-          35.5,
-          32.2,
-          34.2,
-          36.3,
-          37.8,
-          35.3,
-          40.8
+          34.4,
+          34.3,
+          34.3,
+          35.2,
+          33.5,
+          34.4,
+          33.1
         ],
-        "work_ms_min": -1.8,
-        "work_ms_median": 1.7,
+        "work_ms_min": -0.5,
+        "work_ms_median": 2.0,
         "out_bytes": 1545
       }
     },
     "history/n=30": {
       "fromJSON": {
-        "ms_min": 250.5,
-        "ms_median": 254.0,
+        "ms_min": 252.8,
+        "ms_median": 255.1,
         "ms_all": [
-          254.0,
-          250.5,
-          253.5,
-          254.9,
-          253.9,
-          254.4,
-          255.2
+          255.1,
+          252.9,
+          254.8,
+          252.8,
+          257.6,
+          265.3,
+          262.1
         ],
-        "work_ms_min": 216.8,
-        "work_ms_median": 219.9,
+        "work_ms_min": 218.2,
+        "work_ms_median": 224.5,
         "out_bytes": 10596
       },
       "nfk3": {
-        "ms_min": 44.9,
-        "ms_median": 47.6,
+        "ms_min": 46.9,
+        "ms_median": 47.3,
         "ms_all": [
+          49.9,
+          47.1,
+          48.1,
           47.3,
-          49.3,
-          47.9,
-          44.9,
-          46.8,
-          49.1,
-          47.6
+          46.9,
+          47.3,
+          47.0
         ],
-        "work_ms_min": 11.3,
-        "work_ms_median": 12.8,
+        "work_ms_min": 12.4,
+        "work_ms_median": 14.9,
         "out_bytes": 10596
       },
       "nfk3s": {
-        "ms_min": 36.0,
-        "ms_median": 37.1,
+        "ms_min": 32.1,
+        "ms_median": 36.9,
         "ms_all": [
-          37.7,
-          38.2,
-          37.1,
-          36.8,
-          36.0,
-          37.5,
-          36.7
+          32.1,
+          35.7,
+          39.4,
+          36.9,
+          38.0,
+          35.9,
+          38.1
         ],
-        "work_ms_min": 1.1,
-        "work_ms_median": 2.6,
+        "work_ms_min": 0.9,
+        "work_ms_median": 3.5,
         "out_bytes": 10596
       }
     },
     "history/n=100": {
       "fromJSON": {
-        "ms_min": 255.6,
-        "ms_median": 257.7,
+        "ms_min": 256.0,
+        "ms_median": 259.0,
         "ms_all": [
-          255.6,
-          264.6,
-          257.7,
-          258.5,
-          261.6,
-          256.2,
-          256.8
+          258.8,
+          256.0,
+          261.7,
+          260.0,
+          258.0,
+          259.0,
+          276.8
         ],
-        "work_ms_min": 220.2,
-        "work_ms_median": 222.8,
+        "work_ms_min": 221.3,
+        "work_ms_median": 226.6,
         "out_bytes": 26358
       },
       "nfk3": {
-        "ms_min": 48.8,
-        "ms_median": 49.9,
+        "ms_min": 46.8,
+        "ms_median": 49.3,
         "ms_all": [
-          51.0,
-          49.9,
-          50.4,
-          49.3,
-          48.8,
-          51.9,
+          50.1,
+          50.7,
+          48.4,
+          46.8,
+          66.1,
+          48.5,
           49.3
         ],
-        "work_ms_min": 14.4,
-        "work_ms_median": 15.5,
+        "work_ms_min": 12.9,
+        "work_ms_median": 19.5,
         "out_bytes": 26358
       },
       "nfk3s": {
-        "ms_min": 42.8,
-        "ms_median": 44.3,
+        "ms_min": 41.3,
+        "ms_median": 44.0,
         "ms_all": [
+          41.3,
           44.2,
-          44.3,
-          45.5,
-          42.8,
-          45.0,
-          44.3,
-          43.1
+          45.2,
+          43.2,
+          42.6,
+          47.7,
+          44.0
         ],
-        "work_ms_min": 8.7,
-        "work_ms_median": 9.5,
+        "work_ms_min": 9.4,
+        "work_ms_median": 10.6,
         "out_bytes": 26358
       }
     },
     "history/n=200": {
       "fromJSON": {
-        "ms_min": 253.1,
-        "ms_median": 256.4,
+        "ms_min": 253.2,
+        "ms_median": 258.7,
         "ms_all": [
-          256.4,
-          255.3,
-          253.1,
-          258.3,
-          253.2,
-          262.7,
-          258.8
+          266.8,
+          258.7,
+          270.5,
+          257.0,
+          254.3,
+          259.7,
+          253.2
         ],
-        "work_ms_min": 217.0,
-        "work_ms_median": 221.7,
+        "work_ms_min": 221.0,
+        "work_ms_median": 227.3,
         "out_bytes": 42326
       },
       "nfk3": {
-        "ms_min": 51.3,
-        "ms_median": 52.7,
+        "ms_min": 49.7,
+        "ms_median": 51.2,
         "ms_all": [
-          51.9,
-          51.3,
-          54.4,
-          53.3,
-          52.7,
-          52.7,
-          53.6
+          50.7,
+          51.0,
+          51.2,
+          52.6,
+          49.7,
+          52.2,
+          57.2
         ],
-        "work_ms_min": 16.4,
-        "work_ms_median": 18.7,
+        "work_ms_min": 16.2,
+        "work_ms_median": 19.8,
         "out_bytes": 42326
       },
       "nfk3s": {
-        "ms_min": 44.7,
-        "ms_median": 55.0,
+        "ms_min": 51.7,
+        "ms_median": 54.1,
         "ms_all": [
-          44.7,
-          54.9,
-          54.9,
-          56.0,
-          55.0,
-          68.3,
-          65.1
+          54.1,
+          57.7,
+          53.5,
+          69.4,
+          53.4,
+          51.7,
+          67.2
         ],
-        "work_ms_min": 9.2,
-        "work_ms_median": 21.2,
+        "work_ms_min": 19.2,
+        "work_ms_median": 23.4,
         "out_bytes": 42326
       }
     }
@@ -683,16 +683,16 @@
   "baseline": {
     "expr": "\"\"",
     "label": "nix load floor (empty eval, same flags)",
-    "ms_min": 33.5,
-    "ms_median": 34.0,
+    "ms_min": 23.5,
+    "ms_median": 32.4,
     "ms_all": [
-      35.5,
-      33.6,
-      36.0,
-      33.6,
-      34.0,
-      33.5,
-      34.0
+      30.7,
+      34.7,
+      23.5,
+      33.9,
+      33.3,
+      32.4,
+      25.9
     ]
   }
 }

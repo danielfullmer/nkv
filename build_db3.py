@@ -6,7 +6,7 @@ Usage: python3 build_db3.py input.json output.nfd3 [--check]
 
 Sharded mode (optional; see kv3s.nix): one NFK v3 file per shard slice of
 the key hash h = sha256(key) hex, slice h[24:24+d] (d = 1/2/3 -> 16/256/
-4096 shards; disjoint from the fp slice 0..6 and the s0 slice 56..64):
+4096 shards; disjoint from the probe-seed slice 56..64):
 
   python3 build_db3.py input.json --shards 256 --prefix dir/ [--check]
 
@@ -18,16 +18,18 @@ only the needed shard is read per lookup.
 #   0..3     magic "NFK3"
 #   4..6     N         (3 b254 bytes)
 #   7..10    M         (4 b254 bytes)
-#   11       format revision byte: '5' (0x35)
-#   12       fpW       (1 b254 byte: digit = width in bytes, 1..4)
+#   11       format revision byte: '6' (0x36)
+#   12       reserved  (1 b254 byte: always 0x01 = digit 0 — the former
+#            fpW; fingerprints were removed in rev 6)
 #   13       koffW     (1 b254 byte: 1..4)
 #   14       klenW     (1 b254 byte: 1..3)
 #   15       vlenW     (1 b254 byte: 1..3)
-#   16..     M entries of EW bytes, EW = fpW + koffW + klenW + vlenW
-#            (7..14), fields at entry offsets:
-#            fp @0 (fpW) | keyOff @fpW (koffW) | keyLen @fpW+koffW (klenW)
-#            | valLen @fpW+koffW+klenW (vlenW)
-#            (unused slot: EW bytes of 0x01)
+#   16..     M entries of EW bytes, EW = koffW + klenW + vlenW (3..10),
+#            fields at entry offsets:
+#            keyOff @0 (koffW) | keyLen @koffW (klenW)
+#            | valLen @koffW+klenW (vlenW)
+#            (unused slot: EW bytes of 0x01; keyOff = 0 marks an unused
+#            slot — a real keyOff is always >= 16 + EW*M > 0)
 #   then     data region: for each key in JSON insertion order, the key's
 #            UTF-8 bytes immediately followed by the value's UTF-8 bytes.
 #            keyOff is absolute from the file start; the value offset is
@@ -40,17 +42,13 @@ only the needed shard is read per lookup.
 #   python3 build_db3.py --write-table nfd3-table.nix
 # (kv3.nix imports it; it costs nothing per lookup).
 
-Hashing: h = sha256(key) in lowercase hex.
-Fingerprint fp = int(h[0:6], 16) + 1 — a 24-bit value; 0 marks an
-unused slot. The width fpW is chosen per table, but a 24-bit value needs
-4 b254 bytes (254^3 - 1 < 2^24), so fpW = 4 today; the header field
-stays so a narrower fingerprint (e.g. a folded hex digest) can be
-adopted without a layout change. Initial slot s0 = int(h[56:64], 16)
+Hashing: h = sha256(key) in lowercase hex. Initial slot
+s0 = int(h[56:64], 16)
 AND (M-1); linear probing, first empty slot wins. M = next_pow2(max(16,
-ceil(1.25*n))), so load <= 0.8. The fingerprint is compared as an int;
-a hit is always confirmed by a byte-for-byte key comparison, so a
-24-bit fingerprint (expected ~N^2/2^24 false pairs at 200k keys) can
-only add a key read, never return a wrong value.
+ceil(1.25*n))), so load <= 0.8. There are no fingerprints (removed in
+rev 6): every occupied slot is read and confirmed by a byte-for-byte
+key comparison, and a walk ends at a key match or an unused slot
+(keyOff = 0).
 
 Field encoding ("b254"): each byte of a field is one digit plus one
 (digit in 0..253 -> byte in 1..254, big-endian digits), so every byte in
@@ -62,8 +60,8 @@ eval (import cache); the table is a format constant, not file data.
 Limits (builder-enforced): N and per-key/value lengths
 < 254^3 (widths capped at 3 bytes); M and keyOff < 254^4 (widths
 capped at 4 bytes); no key or value may contain a NUL byte. Entry field
-widths (fpW, koffW, klenW, vlenW) are the minimum that fit the table's
-maximum fp / key offset / key length / value length, stored once in the
+widths (koffW, klenW, vlenW) are the minimum that fit the table's
+maximum key offset / key length / value length, stored once in the
 header.
 
 JSON input: an object; duplicate keys keep the last (dict semantics,
@@ -79,19 +77,19 @@ import os
 import sys
 
 MAGIC = b"NFK3"
-REV = 53                              # format revision byte: '5'
+REV = 54                              # format revision byte: '6'
 H = 16
 T0 = H                                # index region start (table is static)
-FPW = 4                               # fingerprint field width (b254)
 FO = 4                               # M / keyOff field width (b254)
 FL = 3                               # N / key|value len field width
 B = 254
 MAX_FIELD3 = B ** FL - 1             # 16,387,063
 MAX_FIELD4 = B ** FO - 1             # 4,162,314,255
 
-# entry layout: fp @0 (fpW) | keyOff @fpW (koffW)
-#   | keyLen @fpW+koffW (klenW) | valLen @fpW+koffW+klenW (vlenW)
-#   entry width EW = fpW + koffW + klenW + vlenW (7..14), widths in header
+# entry layout: keyOff @0 (koffW) | keyLen @koffW (klenW)
+#   | valLen @koffW+klenW (vlenW)
+#   (no fingerprints since rev 6; keyOff = 0 marks an unused slot)
+#   entry width EW = koffW + klenW + vlenW (3..10), widths in header
 
 
 def enc(v, digits):
@@ -130,9 +128,9 @@ def width_for(v, maxw, what):
     return w
 
 
-def fp_of(kb):
-    h = hashlib.sha256(kb).hexdigest()
-    return int(h[:6], 16) + 1, int(h[56:64], 16)
+def seed_of(kb):
+    """Probe seed: int(h[56:64], 16) for h = sha256(key) hex."""
+    return int(hashlib.sha256(kb).hexdigest()[56:64], 16)
 
 
 def norm_value(v):
@@ -147,7 +145,7 @@ def norm_value(v):
     return json.dumps(v, separators=(",", ":")).encode("ascii")
 
 def build(pairs):
-    """pairs: iterable of (str key, JSON value) pairs. Returns file bytes."""
+    """pairs: iterable of (str key, str value) pairs. Returns file bytes."""
     items = list(pairs)
     n = len(items)
     m = next_pow2(max(16, -(-5 * n // 4)))   # ceil(1.25 n), load <= 0.8
@@ -167,8 +165,19 @@ def build(pairs):
     # immediately follows its key, so only keyOff is stored per entry
     data_region = b"".join(kb + vb for kb, vb in zip(kb_list, vb_list))
 
-    # Field widths: the smallest per-field byte widths that
-    # fit this table's maxima, stored once in the header.
+    # open addressing, first empty slot (identical to the Nix side)
+    slot_of = {}
+    used = set()
+    for i, kb in enumerate(kb_list):
+        s0 = seed_of(kb) & (m - 1)
+        s = s0
+        while s in used:
+            s = (s + 1) & (m - 1)
+        slot_of[i] = s
+        used.add(s)
+
+    # Field widths: the smallest per-field byte widths that fit this
+    # table's maxima, stored once in the header.
     max_klen = max(map(len, kb_list)) if kb_list else 0
     max_vlen = max(map(len, vb_list)) if vb_list else 0
     klenW = width_for(max_klen, FL, "key length")
@@ -180,39 +189,26 @@ def build(pairs):
     last_kv = (len(kb_list[-1]) + len(vb_list[-1])) if kb_list else 0
     koffW = 1
     for _ in range(FO):
-        ew = FPW + koffW + klenW + vlenW
+        ew = koffW + klenW + vlenW
         max_koff = T0 + ew * m + data_len - last_kv
         need = width_for(max_koff, FO, "key offset")
         if need <= koffW:
             break
         koffW = need
-    ew = FPW + koffW + klenW + vlenW
-
-    # open addressing, first empty slot (identical to the Nix side)
-    slot_of = {}
-    fp_of_i = {}
-    used = set()
-    for i, kb in enumerate(kb_list):
-        fp, hlo = fp_of(kb)
-        s0 = hlo & (m - 1)
-        s = s0
-        while s in used:
-            s = (s + 1) & (m - 1)
-        slot_of[i] = s
-        fp_of_i[i] = fp
-        used.add(s)
+    ew = koffW + klenW + vlenW
 
     header = (
         MAGIC
         + enc(n, FL)
         + enc(m, FO)
-        + bytes([REV, FPW + 1, koffW + 1, klenW + 1, vlenW + 1])
+        # byte 12: reserved (former fpW) — always 0x01 = digit 0
+        + bytes([REV, 0x01, koffW + 1, klenW + 1, vlenW + 1])
     )
     assert len(header) == H
 
-    o_koff = FPW
-    o_klen = FPW + koffW
-    o_vlen = FPW + koffW + klenW
+    o_koff = 0
+    o_klen = koffW
+    o_vlen = koffW + klenW
     idx = bytearray(b"\x01" * (ew * m))   # b254 zero = unused slot
     # NOTE: e below is buffer-relative (idx starts at file offset T0).
     ko = T0 + ew * m
@@ -220,7 +216,6 @@ def build(pairs):
         kb, vb = kb_list[i], vb_list[i]
         e = ew * slot_of[i]
         assert e + ew <= len(idx)
-        idx[e:e + FPW] = enc(fp_of_i[i], FPW)
         idx[e + o_koff:e + o_koff + koffW] = enc(ko, koffW)
         idx[e + o_klen:e + o_klen + klenW] = enc(len(kb), klenW)
         idx[e + o_vlen:e + o_vlen + vlenW] = enc(len(vb), vlenW)
@@ -232,18 +227,23 @@ def build(pairs):
     return blob
 
 def header_widths(data):
-    """(fpW, koffW, klenW, vlenW) from the header, validated."""
-    fpW = data[12] - 1
+    """(koffW, klenW, vlenW) from the header, validated. Byte 12 (the
+    former fpW) must be 0x01 = digit 0: fingerprints were removed in
+    rev 6, so a non-zero value marks a legacy fingerprinted file."""
+    if data[12] != 0x01:
+        raise ValueError(
+            f"byte 12 is {data[12]:#04x}, not 0x01: legacy fingerprinted "
+            f"NFK v3 (rev <= 5) file; fingerprints were removed in rev 6"
+        )
     koffW = data[13] - 1
     klenW = data[14] - 1
     vlenW = data[15] - 1
-    if not (1 <= fpW <= FO and 1 <= koffW <= FO
-            and 1 <= klenW <= FL and 1 <= vlenW <= FL):
+    if not (1 <= koffW <= FO and 1 <= klenW <= FL
+            and 1 <= vlenW <= FL):
         raise ValueError(
-            f"bad field widths: fpW={fpW} koffW={koffW} "
-            f"klenW={klenW} vlenW={vlenW}"
+            f"bad field widths: koffW={koffW} klenW={klenW} vlenW={vlenW}"
         )
-    return fpW, koffW, klenW, vlenW
+    return koffW, klenW, vlenW
 
 
 
@@ -258,18 +258,17 @@ def parse(path):
         raise ValueError(f"table size {m} < entry count {n}")
     if data[11] != REV:
         raise ValueError(f"bad revision byte: {data[11]:#04x}")
-    fpW, koffW, klenW, vlenW = header_widths(data)
+    koffW, klenW, vlenW = header_widths(data)
     if 0 in data:
         raise ValueError("file contains NUL (invalid for Nix readFile)")
-    ew = fpW + koffW + klenW + vlenW
-    o_koff, o_klen, o_vlen = fpW, fpW + koffW, fpW + koffW + klenW
+    ew = koffW + klenW + vlenW
+    o_koff, o_klen, o_vlen = 0, koffW, koffW + klenW
     out = []
     for s in range(m):
         e = T0 + ew * s
-        fp = dec(data[e:e + fpW], fpW)
-        if fp == 0:
-            continue
-        koff = dec(data[e + o_koff:e + o_koff + koffW], koffW)
+        if dec(data[e:e + koffW], koffW) == 0:
+            continue  # keyOff = 0 marks an unused slot
+        koff = dec(data[e:e + koffW], koffW)
         klen = dec(data[e + o_klen:e + o_klen + klenW], klenW)
         vlen = dec(data[e + o_vlen:e + o_vlen + vlenW], vlenW)
         out.append(
@@ -284,33 +283,30 @@ def parse(path):
 
 
 def entry_geometry(data):
-    """(ew, fpW, koffW, klenW, vlenW, o_koff, o_klen, o_vlen) from header."""
-    fpW, koffW, klenW, vlenW = header_widths(data)
-    ew = fpW + koffW + klenW + vlenW
-    o_koff, o_klen, o_vlen = fpW, fpW + koffW, fpW + koffW + klenW
-    return ew, fpW, koffW, klenW, vlenW, o_koff, o_klen, o_vlen
+    """(ew, koffW, klenW, vlenW, o_koff, o_klen, o_vlen) from header."""
+    koffW, klenW, vlenW = header_widths(data)
+    ew = koffW + klenW + vlenW
+    o_koff, o_klen, o_vlen = 0, koffW, koffW + klenW
+    return ew, koffW, klenW, vlenW, o_koff, o_klen, o_vlen
 
 
 def python_get_data(data, key):
     """Open-addressing probe over in-memory file bytes — independent of
     the Nix implementation."""
     m = dec(data[7:11], FO)
-    ew, fpW, koffW, klenW, vlenW, o_koff, o_klen, o_vlen = entry_geometry(data)
+    ew, koffW, klenW, vlenW, o_koff, o_klen, o_vlen = entry_geometry(data)
     kb = key.encode("utf-8")
-    fp, hlo = fp_of(kb)
-    s0 = hlo & (m - 1)
+    s0 = seed_of(kb) & (m - 1)
     for i in range(m):
         s = (s0 + i) & (m - 1)
         e = T0 + ew * s
-        efp = dec(data[e:e + fpW], fpW)
-        if efp == 0:
-            return None
-        if efp == fp:
-            koff = dec(data[e + o_koff:e + o_koff + koffW], koffW)
-            klen = dec(data[e + o_klen:e + o_klen + klenW], klenW)
-            if data[koff:koff + klen] == kb:
-                vlen = dec(data[e + o_vlen:e + ew], vlenW)
-                return data[koff + klen:koff + klen + vlen].decode("utf-8")
+        koff = dec(data[e + o_koff:e + o_koff + koffW], koffW)
+        if koff == 0:
+            return None  # keyOff = 0 marks an unused slot
+        klen = dec(data[e + o_klen:e + o_klen + klenW], klenW)
+        if data[koff:koff + klen] == kb:
+            vlen = dec(data[e + o_vlen:e + o_vlen + vlenW], vlenW)
+            return data[koff + klen:koff + klen + vlen].decode("utf-8")
     return None
 
 
@@ -321,7 +317,7 @@ def python_get(path, key):
 
 def shard_slice(key, digits):
     """Shard slice of sha256(key): hex chars [24:24+digits] — disjoint from
-    the fp slice 0..6 and the s0 slice 56..64 used by kv3.nix."""
+    the probe-seed slice h[56:64] used by kv3.nix."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[24:24 + digits]
 
 
@@ -488,12 +484,12 @@ def main():
     with open(args.output, "wb") as f:
         f.write(data)
     n, m = dec(data[4:7], FL), dec(data[7:11], FO)
-    fpW, koffW, klenW, vlenW = header_widths(data)
+    koffW, klenW, vlenW = header_widths(data)
     print(
         f"wrote {args.output}: {len(data)} bytes, {n} entries, "
         f"M={m} load={n / m:.3f}, "
-        f"widths fp={fpW} off={koffW} klen={klenW} vlen={vlenW} "
-        f"(EW={fpW + koffW + klenW + vlenW})"
+        f"widths off={koffW} klen={klenW} vlen={vlenW} "
+        f"(EW={koffW + klenW + vlenW})"
     )
 
     if args.check:

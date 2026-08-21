@@ -2,14 +2,17 @@
 # precomputed file, using only builtins.readFile, builtins.substring,
 # builtins.hashString and integer math.
 #
-# Open addressing: sha256 fingerprint + linear probing over a power-of-two
-# table at load <= 0.8. Each numeric field is 1-4 "b254" bytes (one byte
-# per digit, byte = digit + 1, big-endian) so the file never contains NUL
-# (the one byte Nix's readFile rejects). Field bytes are decoded via the
-# static decode table `nfd3-table.nix` (255-entry attrset, byte 1-char
-# string -> digit). The table is a format constant shared by every NFK v3
-# file — it is NOT carried in the database — and is imported once per eval
-# (Nix import cache), so it costs nothing per lookup. Generate it with
+# Open addressing: one sha256-derived probe seed + linear probing over
+# a power-of-two table at load <= 0.8. No fingerprints (removed in
+# rev 6): every occupied slot is read and confirmed by a byte-for-byte
+# key comparison. Each numeric field is 1-4 "b254" bytes (one byte
+# per digit, byte = digit + 1, big-endian) so the file never contains
+# NUL (the one byte Nix's readFile rejects). Field bytes are decoded
+# via the static decode table `nfd3-table.nix` (255-entry attrset, byte
+# 1-char string -> digit). The table is a format constant shared by
+# every NFK v3 file — it is NOT carried in the database — and is
+# imported once per eval (Nix import cache), so it costs nothing per
+# lookup. Generate it with
 # `python3 build_db3.py --write-table nfd3-table.nix`.
 #
 # `db` is the path (or string path) of one NFK v3 file.
@@ -18,20 +21,26 @@
 #   0..3    magic "NFK3"
 #   4..6    N         3 b254 bytes
 #   7..10   M         4 b254 bytes
-#   11      format revision byte: '5'
-#   12..15  entry field widths in bytes (b254 digits):
-#           fpW 1-4 | keyOffW 1-4 | keyLenW 1-3 | valLenW 1-3;
-#           entry width EW = fpW + keyOffW + keyLenW + valLenW (7-14)
-#   16..    M entries of EW bytes: fp | keyOff | keyLen | valLen at
-#           entry offsets 0, fpW, fpW+keyOffW, fpW+keyOffW+keyLenW
-#   then    data region: for each key in insertion order, the key's bytes
-#           followed immediately by the value's bytes; keyOff is absolute
-#           from the file start, the value offset is keyOff + keyLen.
+#   11      format revision byte: '6'
+#   12      reserved: always 0x01 (b254 digit 0) — the former fpW;
+#           asserted 0 at import
+#   13..15  entry field widths in bytes (b254 digits):
+#           keyOffW 1-4 | keyLenW 1-3 | valLenW 1-3;
+#           entry width EW = keyOffW + keyLenW + valLenW (3-10)
+#   16..    M entries of EW bytes: keyOff | keyLen | valLen at entry
+#           offsets 0, keyOffW, keyOffW+keyLenW
+#           (unused slot: EW bytes of 0x01; keyOff = 0 marks an unused
+#           slot — a real keyOff is always >= 16 + EW*M)
+#   then    data region: for each key in insertion order, the key's
+#           bytes followed immediately by the value's bytes; keyOff
+#           is absolute from the file start, the value offset is
+#           keyOff + keyLen.
 #
-# fp = int(sha256(key) hex [0:6]) + 1 (24-bit; 0 marks an unused slot).
-# Slot s0 = int(h[56:64], 16) AND (M-1); linear probe, wrap with bitAnd.
-# A fingerprint hit is confirmed by byte-for-byte key comparison, so a
-# fingerprint collision can only add a key read, never a wrong value.
+# Slot s0 = int(h[56:64], 16) AND (M-1) for h = sha256(key) hex;
+# linear probe, wrap with bitAnd, bounded by M steps (load < 1
+# guarantees an unused slot is reached). A walk ends at a key match
+# or an unused slot — every occupied slot is read and compared
+# key-by-key.
 # Values are opaque bytes; when a value holds a JSON document,
 # getJson/getOrJson return builtins.fromJSON of it (a miss is null).
 #
@@ -62,7 +71,7 @@ db:
     # 3 bytes -> value < 254^3 (lengths, counts)
     dec3 = p: (byte p * B + byte (p + 1)) * B + byte (p + 2);
 
-    # 4 bytes -> value < 254^4 (offsets, fingerprint, table size)
+    # 4 bytes -> value < 254^4 (offsets, table size)
     dec4 = p: ((byte p * B + byte (p + 1)) * B + byte (p + 2)) * B + byte (p + 3);
 
     # hex string -> int (no builtins.parseInt; one HEX lookup per char)
@@ -76,10 +85,12 @@ db:
     n = dec3 4;
     m = dec4 7;
 
-    # Entry field widths, stored once per file in the header
-    # at offsets 12..15; each is a b254 digit == width in bytes
+    # Entry field widths, stored once per file in the header at
+    # offsets 13..15; each is a b254 digit == width in bytes
     # (byte = digit + 1), so `byte` returns the width directly.
-    fpW = byte 12;
+    # Offset 12 is reserved (always b254 digit 0 — the former fpW;
+    # fingerprints removed in rev 6) and asserted 0 below.
+    reserved = byte 12;
     koffW = byte 13;
     klenW = byte 14;
     vlenW = byte 15;
@@ -93,49 +104,45 @@ db:
       else if w == 3 then (p: (byte p * B + byte (p + 1)) * B + byte (p + 2))
       else (p: ((byte p * B + byte (p + 1)) * B + byte (p + 2)) * B + byte (p + 3));
 
-    dFP = decW fpW;
     dKO = decW koffW;
     dKL = decW klenW;
     dVL = decW vlenW;
 
     # Entry geometry, recomputed from the header (not a format constant).
-    EW = fpW + koffW + klenW + vlenW;
-    OKO = fpW;
-    OKL = fpW + koffW;
-    OVL = fpW + koffW + klenW;
+    EW = koffW + klenW + vlenW;
+    OKO = 0;
+    OKL = koffW;
+    OVL = koffW + klenW;
 
-    # Probe: at most m steps (bounded; an unused slot must exist).
-    # Unused slot (fp 0) -> null. Fingerprint hit -> confirm key bytes.
-    probe = key: fp: s0: i:
+    # Probe: at most m steps (bounded; load < 1 guarantees an unused
+    # slot). Unused slot (keyOff 0) -> null; every occupied slot is read
+    # and compared by key.
+    probe = key: s0: i:
       let
         s = builtins.bitAnd (s0 + i) (m - 1);
         e = T0 + EW * s;
-        efp = dFP e;
+        koff = dKO e;   # OKO = 0
       in
-        if efp == 0 then null
-        else if efp != fp then probe key fp s0 (i + 1)
+        if koff == 0 then null
         else
           let
-            koff = dKO (e + OKO);
             klen = dKL (e + OKL);
             k = builtins.substring koff klen raw;
           in
             if k == key
             then builtins.substring (koff + klen) (dVL (e + OVL)) raw
-            else probe key fp s0 (i + 1);
+            else probe key s0 (i + 1);
 
     get = key:
       let
         h = builtins.hashString "sha256" key;
+        s0 = builtins.bitAnd (hexInt (builtins.substring 56 8 h)) (m - 1);
       in
-        probe key
-          (hexInt (builtins.substring 0 6 h) + 1)
-          (builtins.bitAnd (hexInt (builtins.substring 56 8 h)) (m - 1))
-          0;
+        probe key s0 0;
   in
   assert (builtins.substring 0 4 raw) == "NFK3";
-  assert (builtins.substring 11 1 raw) == "5";
-  assert fpW >= 1 && fpW <= 4 && koffW >= 1 && koffW <= 4
+  assert (builtins.substring 11 1 raw) == "6";
+  assert reserved == 0 && koffW >= 1 && koffW <= 4
     && klenW >= 1 && klenW <= 3 && vlenW >= 1 && vlenW <= 3;
   let
   in

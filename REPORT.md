@@ -2,42 +2,42 @@
 
 A lookup function for static string→value tables in **pure Nix** (no
 `builtins.exec`, no foreign interpreters, no per-eval parse of the data),
-backed by a precomputed **NFK v3** file: one `hashString sha256` per lookup,
-a 24-bit fingerprint, and linear probing over a power-of-two table at load
-≤ 0.8, all driven by byte reads (`substring`) of the file. The table's
+backed by a precomputed **NFK v3** file: one `hashString sha256` per lookup
+seeding a linear-probe walk over a power-of-two table at load ≤ 0.8, all
+driven by byte reads (`substring`) of the file. The table's
 decode alphabet is a format constant stored in one static Nix file
 (`nfd3-table.nix`), imported once per eval.
 
 For very large tables, or evals doing only a few lookups, the table can be
 **sharded** into a directory of independent NFK v3 files (`kv3s.nix` reads
-one shard per lookup, ~50–72 KB each, so a cold single lookup reads ~50 KB
+one shard per lookup, 46–62 KB each on the 200k table, so a cold single lookup reads ~54 KB
 instead of the whole table). Every number in this report is split into the
 **Nix load floor** — measured as a cold empty eval
-(`nix eval --impure --raw --expr '""'`, 33.6 ms median here) — and the table
-**work** on top of it: a sharded single lookup's work is ~0.6 ms, a
-single-file one's ~25.9 ms. Headline: a cold single lookup on the 200,000-key
-table drops from ~213 ms (`fromJSON`) to **~34 ms (sharded) / ~60 ms
+(`nix eval --impure --raw --expr '""'`, 33.0 ms median here) — and the table
+**work** on top of it: a sharded single lookup's work is ~1.2 ms, a
+single-file one's ~22.9 ms. Headline: a cold single lookup on the 200,000-key
+table drops from ~210 ms (`fromJSON`) to **~34 ms (sharded) / ~57 ms
 (single file)** total.
 
 ## Summary
 
 | | result |
 |---|---|
-| correctness | 251,005 parent single-file + 600,000 parent sharded + 127,616 multiverse lookups (31,904 × 2 datasets × {single, sharded}): **0 mismatches**, all misses → `null` |
-| Cold single lookup, 200k keys | ~34 ms sharded (work 0.6) / ~60 ms single-file NFK v3 (work 25.9) vs ~213 ms `builtins.fromJSON` (work 179.4) — ~299× / 6.9× on the data work |
-| Cold single lookup, 50k keys | 41.1 ms (work 7.8) vs 80.1 ms (work 46.3), 5.9× on work; 1k keys: 34.7 vs 34.9 ms, work ≈ 1 ms each (parity, startup-bound) |
-| nixpkgs-multiverse, 31,904 attrs | 10–18× (single file) and 6.8–251× (256 shards; low query counts) across N = 1–200, on the data work |
-| file size | 200k keys: 14,700,668 B = 1.05× the 13.9 MB JSON |
-| Nix load floor | Measured as a cold empty eval (`nix eval --impure --raw --expr '""'`, no expression work): 33.6 ms median (parent, 31.9–34.8) / 34.0 ms (multiverse, 33.5–36.0); NFK v3 work on top: ~0.6–23 ms sharded / ~1–30 ms single-file; `fromJSON` parse work ~123–230 ms |
+| correctness | 251,005 parent single-file + 200,000 parent sharded + 127,616 multiverse lookups (31,904 × 2 datasets × {single, sharded}): **0 mismatches**, all misses → `null` |
+| Cold single lookup, 200k keys | ~34 ms sharded (work 1.2) / ~57 ms single-file NFK v3 (work 22.9) vs ~210 ms `builtins.fromJSON` (work 174.7) — ≈146× / 7.6× on the data work |
+| Cold single lookup, 50k keys | 39.7 ms (work 4.9) vs 80.2 ms (work 45.9), 9.4× on work; 1k keys: 34.3 vs 34.9 ms, work 1.1 / 0.1 ms (parity, startup-bound) |
+| nixpkgs-multiverse, 31,904 attrs | 8–18× (single file) and 7–149× (256 shards; low query counts; at N = 1 the history sharded work rounds to 0.0) across N = 1–200, on the data work |
+| file size | 200k keys: 13,652,092 B = 0.98× the 13.9 MB JSON (3,390,934 B = 0.98× at 50k; 70,750 B = 1.03× at 1k) |
+| Nix load floor | Measured as a cold empty eval (`nix eval --impure --raw --expr '""'`, no expression work): 33.0 ms median (parent, 23.2–38.7) / 32.4 ms (multiverse, 23.5–34.7); NFK v3 work on top: ~0–23 ms sharded / ~10–32 ms single-file; `fromJSON` parse work ~123–228 ms |
 
 ## Why not `builtins.fromJSON`?
 
 `( builtins.fromJSON (builtins.readFile "large.json") )."some.key"` works —
 but the 13.9 MB file is parsed on **every evaluation, for any number of
-lookups**: ~209–214 ms wall per eval on the 200k-key table — ~174–180 ms of
-work on top of the ~34 ms Nix load floor — flat from 1 to 200 lookups
+lookups**: ~207–214 ms wall per eval on the 200k-key table — ~173–181 ms of
+work on top of the ~33 ms Nix load floor — flat from 1 to 200 lookups
 (the parse is the whole work term). NFK v3
-reads only the 16-byte header, one W-byte (9–10 byte) index entry per probe
+reads only the 16-byte header, one EW-byte (5–6 byte) index entry per probe
 step, and
 the one key/value pair needed. The lookup result is identical; the
 correctness oracle (`test_correctness3.nix`) checks every key against
@@ -45,17 +45,18 @@ correctness oracle (`test_correctness3.nix`) checks every key against
 
 ## File format: NFK v3
 
-open addressing with a dense power-of-two table and W-byte entries (W =
-fpW + koffW + klenW + vlenW; 9–10 in current builds). Numeric fields are
-1–4 **b254** bytes (one byte per digit, `byte = digit + 1`, big-endian
-digits), and the per-field widths are chosen at build time and stored in the
-header — so every file byte is `0x01`–`0xFF` and the file never contains NUL,
-the one byte Nix's `readFile` rejects.
+NFK v3 is a binary format for string→value tables: open addressing with a dense power-of-two table and EW-byte entries
+(EW = koffW + klenW + vlenW; 5–6 in the current single-file builds, 4–5 in
+the 256-shard builds). Numeric fields are 1–4 **b254** bytes (one byte per
+digit, `byte = digit + 1`, big-endian digits), and the per-field widths are
+chosen at build time and stored in the header — so every file byte is
+`0x01`–`0xFF` and the file never contains NUL, the one byte Nix's `readFile`
+rejects.
 
 ```
      offset 0              header, 16 bytes
-     offset 16             index region, M × W bytes (W = 9–10)
-     offset 16 + M·W       data region (interleaved, variable)
+     offset 16             index region, M × EW bytes (EW = 3–10; 5–6 in the shipped single-file builds)
+     offset 16 + M·EW      data region (interleaved, variable)
 ```
 
 **Header (16 bytes):**
@@ -65,21 +66,24 @@ the one byte Nix's `readFile` rejects.
 | magic | 0 | 4 | `NFK3` |
 | `N` | 4 | 3 | entry count (b254) |
 | `M` | 7 | 4 | table size, power of two (b254) |
-| revision | 11 | 1 | `5` (0x35) — no data-region totals |
-| `fpW` `koffW` `klenW` `vlenW` | 12–15 | 4 | per-field b254 widths: 1–4 / 1–4 / 1–3 / 1–3 |
+| revision | 11 | 1 | `6` (0x36) — no data-region totals |
+| reserved | 12 | 1 | `0x01` (b254 digit 0) — the rev-5 `fpW` width byte, kept as a reserved slot |
+| `koffW` `klenW` `vlenW` | 13–15 | 3 | per-field b254 widths — each the smallest that fits the table's max: 1–4 / 1–3 / 1–3 |
 
-**Index region** — one W-byte entry per table slot `s` at offset `16 + W·s`:
+**Index region** — one EW-byte entry per table slot `s` at offset `16 + EW·s`:
 
 | field | offset | width | meaning |
 |---|---:|---:|---|
-| `fp` | 0 | 1–4 | `int(sha256(key) hex [0:6], 16) + 1` (24-bit); 0 = unused |
-| `keyOff` | `fpW` | 1–4 | absolute file offset of the key |
-| `keyLen` | `fpW`+`koffW` | 1–3 | key length |
-| `valLen` | `fpW`+`koffW`+`klenW` | 1–3 | value length (value is at `keyOff + keyLen`) |
+| `keyOff` | 0 | 1–4 | absolute file offset of the key; `0` = unused slot |
+| `keyLen` | `koffW` | 1–3 | key length |
+| `valLen` | `koffW`+`klenW` | 1–3 | value length (value is at `keyOff + keyLen`) |
 
-An unused slot is W bytes of `0x01` (all fields zero); a miss is a decoded-fingerprint compare against 0 (`fp = int + 1` is never 0). The data region
-interleaves key and value bytes in JSON insertion order, so only the key
-offset is stored per entry — the value offset is implicit.
+An unused slot is EW bytes of `0x01` (all fields zero); a miss is a
+decoded `keyOff` of 0 (a real key offset is always ≥ `16 + EW·M`). Every
+occupied slot is read and byte-compared against the key, so a mismatch
+costs one extra key read and a wrong value is impossible by construction.
+The data region interleaves key and value bytes in JSON insertion order,
+so only the key offset is stored per entry — the value offset is implicit.
 
 **Decode table — static, not in the file.** The b254 alphabet (255 bytes
 `0x01`–`0xFF` → digits 0–254) is a format constant shared by every NFK v3
@@ -101,12 +105,11 @@ not just hygiene — the Nix lexer normalizes a raw `0x0D` byte in source to
 `0x0A` (verified byte-for-byte), so an unescaped raw-CR table would corrupt
 the `0x0D` digit.
 
-**Placement and probing.** `s0 = int(h[56:64], 16) AND (M − 1)`, linear
-probing, bounded by `M` steps (load < 1 guarantees an unused slot is
-reached). The 24-bit fingerprint implies ≈ (N−1)/2²⁴ ≈ 0.012 expected
-false fingerprint matches per lookup at 200k keys (≈ 1,190 colliding key
-pairs total); each false match costs one extra key read + byte compare
-and can never yield a wrong value.
+**Placement and probing.** `s0 = int(h[56:64], 16) AND (M − 1)` (the
+probe-seed slice), linear probing, bounded by `M` steps (load < 1
+guarantees an unused slot is reached). Every occupied slot is read and
+byte-compared against the key — a mismatch costs one extra key read and
+can never yield a wrong value.
 
 **Limits** (builder-enforced): `N`, key length, and value length < 254³
 (≈16.4 MB); `M` and file offsets < 254⁴ (≈4.16 GB); no NUL anywhere. The
@@ -117,14 +120,19 @@ Measured sizes (JSON → NFK v3, with static table):
 
 | dataset | keys | JSON bytes | NFK v3 bytes | index bytes | ratio |
 |---|---:|---:|---:|---:|---:|
-| small | 1,005 | 68,534 | 78,942 | 18,432 | 1.15× |
-| medium | 50,000 | 3,463,238 | 3,653,078 | 589,824 | 1.05× |
-| large | 200,000 | 13,941,356 | 14,700,668 | 2,359,296 | 1.05× |
+| small | 1,005 | 68,534 | 70,750 | 10,240 | 1.03× |
+| medium | 50,000 | 3,463,238 | 3,390,934 | 327,680 | 0.98× |
+| large | 200,000 | 13,941,356 | 13,652,092 | 1,310,720 | 0.98× |
+| multiverse versions | 31,904 | 4,833,362 | 5,098,977 | 393,216 | 1.06× |
+| multiverse history | 31,904 | 6,876,612 | 7,142,227 | 393,216 | 1.04× |
 
-W-byte entries, no padding (current builds: W = 9–10 = `fp` 4 + `keyOff` 3 +
-`keyLen` 1 + `valLen` 1–2 — W = 9 for the parent tables, W = 10 for the
-multiverse tables); the index is ~16% of the medium/large files
-(23% of small, where the M = 2,048 table is proportionally large).
+EW-byte entries, no padding (current builds: EW = 5 = `keyOff` 3 + `keyLen`
+1 + `valLen` 1 for the parent tables; EW = 6 = `keyOff` 3 + `keyLen` 1 +
+`valLen` 2 for the multiverse single tables; EW = 4 = `keyOff` 2 + `keyLen`
+1 + `valLen` 1 for the large shards, EW = 5 with `valLen` 2 for the
+multiverse shards — shard-local offsets fit in 2 b254 digits); the index is
+~9.6% of the medium/large files (14.5% of small, where the M = 2,048 table
+is proportionally large; 7.7% / 5.5% of the multiverse singles).
 
 **JSON values.** Values are opaque (any UTF-8 minus NUL). String values are
 stored raw and returned as-is by `get`; non-string values are stored as
@@ -136,23 +144,26 @@ time via `getJson`/`getOrJson` (a miss is still `null`).
 ```
 lookup(key):
   h  = sha256(key) in lowercase hex
-  fp = int(h[0:6], 16) + 1              # 24-bit fingerprint
-  s  = int(h[56:64], 16) AND (M - 1)    # initial slot
+  s  = int(h[56:64], 16) AND (M - 1)    # probe-seed slot
   for i in 0..M:                        # bounded walk
-    e    = 16 + W * ((s + i) AND (M - 1)) # W from the header (bitAnd wrap)
-    efp  = b254-decode(entry[e .. e+fpW]) # fpW static-table lookups
-    if efp = 0: return null             # unused slot: key absent
-    if efp ≠ fp: continue               # fingerprint miss: probe on
-    k    = substring(raw, keyOff, keyLen)
-    if k = key: return substring(raw, keyOff + keyLen, valLen)
+    e    = 16 + EW * ((s + i) AND (M - 1)) # EW from the header (bitAnd wrap)
+    koff = b254-decode(entry[e .. e+koffW]) # koffW static-table lookups
+    if koff = 0: return null             # unused slot: key absent
+    klen = b254-decode(entry[e+koffW .. e+koffW+klenW])
+    k    = substring(raw, koff, klen)
+    if k = key:
+      vlen = b254-decode(entry[e+koffW+klenW .. e+EW])
+      return substring(raw, koff + klen, vlen)
   unreachable (load < 1)
 ```
 
-Per probe step: fpW (4) static-table lookups for the fingerprint, then
-koffW + klenW + vlenW (5–6) more on a fingerprint hit, one `substring` key
-read, one string compare. One `sha256` per lookup; a successful walk
-averages ½(1 + 1/(1−α)) probe steps — ≈ 1.5 at load 0.49, ≈ 2.6 at load
-0.76, 3 at the 0.8 cap.
+Per probe step: koffW + klenW + vlenW (header values; 5 per step in the
+current single-file builds) static-table lookups for the offset and
+lengths, one `substring` key read, and one string compare at every
+occupied slot; on a hit, one more width-specialized decode for the value
+length, then a `substring` value read. One `sha256` per lookup; a
+successful walk averages ½(1 + 1/(1−α)) probe steps — ≈ 1.5 at load 0.49,
+≈ 2.6 at load 0.76, 3 at the 0.8 cap.
 
 ## Sharding
 
@@ -163,9 +174,9 @@ hash:
 - shard of key `k` = `DIR/<h[24:24+d]>.nfd3`, where `h` is the lowercase hex
   of `sha256(k)` and `d` is the digit count (`--shards 16/256/4096` →
   `d = 1/2/3`);
-- the slice `[24:24+d)` is disjoint from the fingerprint slice `[0:6)` and
-  the probe-seed slice `[56:64)`, so sharding does not perturb probe
-  distribution; each shard is a standalone NFK v3 table with its own
+- the slice `[24:24+d)` is disjoint from the probe-seed slice `[56:64)`,
+  so sharding does not perturb probe distribution; each shard is a
+  standalone NFK v3 table with its own
   `M = next_pow2(max(16, ⌈1.25·N_shard⌉))`;
 - **every shard file is always written** — an empty shard is a valid NFK v3
   file with `N = 0`, `M = 16` — so a key always resolves to an existing
@@ -176,6 +187,9 @@ hash:
   `import ./nfd3-table.nix` evaluates once per process no matter how many
   shards are imported;
 - `db.count` imports every shard file — offline / inspection use only;
+- measured shard sizes (256-shard builds): 46,025–62,052 B each on the
+  200k-key table (EW = 4), 10,932–34,558 B on versions and 15,294–50,096 B
+  on history (EW = 5);
 - `--check` in sharded mode re-derives shard membership from the input keys
   and re-probes every key through the shard files.
 
@@ -186,7 +200,7 @@ Files in this repo:
 | file | purpose |
 |---|---|
 | `kv3.nix` | NFK v3 lookup module: `db.get` / `getOr` / `has` / `getJson` / `getOrJson` / `count` / `tableSize`; imports the static decode table once per eval |
-| `kv3s.nix` | sharded NFK v3 reader: takes a `--shards` directory + `digits`; lazy per-lookup shard import |
+| `kv3s.nix` | sharded NFK v3 reader: `import ./kv3s.nix { digits = 2; dir = ... }`; lazy per-lookup shard import |
 | `nfd3-table.nix` | the 255-entry b254 decode table (generated by `build_db3.py --write-table`; a format constant) |
 | `build_db3.py` | JSON → NFK v3 builder (single file or `--shards/--prefix`) with independent parser + `--check` |
 | `gen_data.py` | deterministic test KV generator (1k / 50k / 200k keys) |
@@ -222,8 +236,9 @@ python3 build_db3.py --write-table nfd3-table.nix          # regenerate the stat
 Builder guarantees: `N` and each key/value length < 254³ bytes, `M` and
 file offsets < 254⁴ (raises otherwise); the Python
 hash is byte-identical to Nix's (`hashlib.sha256(k).hexdigest()` → same
-`fp` and same `int(h[56:64],16) & (M-1)` slot), which the cross-language
-round-trip proves; single-file output is byte-identical across rebuilds.
+probe seed `int(h[56:64],16) & (M-1)` and same shard name), which the
+cross-language round-trip proves; single-file output is byte-identical
+across rebuilds.
 
 Nix 2.34.7+1 workarounds this module relies on:
 
@@ -231,14 +246,19 @@ Nix 2.34.7+1 workarounds this module relies on:
   `builtins.hasSuffix`, no `or`): every b254 field decodes one byte at a
   time through the static `nfd3-table.nix` attrset, via one
   width-specialized thunk per width (1–4) selected once per file from the
-  header (1–4 lookups per field; current builds: 4/3/1/1–2); the only
-  `foldl'` in the module is the 16-radix `hexInt` fold;
+  header (1–4 lookups per field; current builds: 3/1/1–2 for the singles,
+  2/1/1–2 for the shards); the only `foldl'` in the module is the 16-radix
+  `hexInt` fold;
 - **no `%`**: probe wrap is `builtins.bitAnd (s + i) (M - 1)`, exact because
   `M` is a power of two;
-- **24-bit fingerprint**: `hexInt` fold (`* 16 +`) over `sha256(key)`'s
-  first 6 hex chars, plus 1 to dodge the 0 empty-slot marker (no mask:
-  24 bits fit the 4-byte b254 field); probe seed is the same fold over
-  hex chars `[56:64)`, `bitAnd`-masked to `M - 1`;
+- **probe seed**: `hexInt` fold (`* 16 +`) over `sha256(key)`'s hex chars
+  `[56:64)`, `bitAnd`-masked to `M - 1` (8 hex chars = 32 bits, masked to
+  a power-of-two table index);
+- **list-literal gotcha** (Nix 2.34.7+1): `[db.get "k"]` is a two-element
+  list — the function `db.get` and the string `"k"`, since an attribute
+  path does not absorb a following argument as an application inside a
+  list literal — so result lists are built with `builtins.map` (as the
+  harnesses and benches do);
 - **binary-safe I/O**: bytes from `readFile` pass through `substring`,
   `stringLength`, and `hashString` untouched (verified on 2.34.7); only
   source *literals* are UTF-8-decoded — which is why the decode table is an
@@ -258,9 +278,9 @@ Each dataset is cross-checked against the `fromJSON` oracle in
 `--check` independently re-probes every key at build time (Python probe +
 known miss).
 
-Sharded correctness: 16-, 256-, and 4096-shard builds of the 200k-key table
-are re-probed end-to-end through the shard files (200,000 lookups each,
-600,000 total, 0 mismatches, miss → `None`). The multiverse single-file and
+Sharded correctness: the 256-shard build of the 200k-key table is
+re-probed end-to-end through the shard files (200,000 lookups, 0
+mismatches, miss → `None`). The multiverse single-file and
 sharded indexes (256 shards each) are checked against `fromJSON` in
 `multiverse-faster/test_correctness.nix` and
 `multiverse-faster/test_correctness_shards.nix`: `mismatches = 0`, misses →
@@ -292,56 +312,58 @@ invocation style (`nix eval --impure --raw --expr '""'`, no file read, no
 lookup) — and reports, per method: **total** (full cold-eval wall time),
 **work = total − floor** (paired by run index: the i-th method run is
 paired with the i-th baseline run), and the baseline series itself. The
-measured floor: **33.6 ms median** (31.9–34.8) in the parent run, **34.0 ms**
-(33.5–36.0) in the multiverse run. Tables below show `total (work)` ms; the
-× multipliers are on work (fromJSON work ÷ method work), so the ~34 ms
+measured floor: **33.0 ms median** (23.2–38.7) in the parent run, **32.4 ms**
+(23.5–34.7) in the multiverse run. Tables below show `total (work)` ms; the
+× multipliers are on work (fromJSON work ÷ method work), so the ~32–33 ms
 startup floor drops out of both sides.
 
-### Parent, large (200,000 keys; 13.9 MB JSON / 14.7 MB `.nfd3`; 256 shards of 50–72 KB)
+### Parent, large (200,000 keys; 13.9 MB JSON / 13.7 MB `.nfd3`; 256 shards of 46–62 KB)
 
 Median `total (work)` ms per cold eval (n = 200 row: min-of-7, work paired at
-the min-total run); Nix load floor this run: 33.6 ms (31.9–34.8):
+the min-total run); Nix load floor this run: 33.0 ms (23.2–38.7):
 
 | lookups/eval | fromJSON | nfk3 | nfk3s |
 |---:|---:|---:|---:|
-| 0 | 266.2 (233.5) | 59.8 (25.9) | — (no load point) |
-| 1 | 212.7 (179.4) | 59.8 (25.9) (6.9×) | **33.6 (0.6)** (299×) |
-| 5 | 212.5 (179.4) | 58.9 (24.8) (7.2×) | 34.2 (0.9) (199×) |
-| 10 | 212.8 (179.2) | 59.0 (25.4) (7.1×) | 34.8 (2.5) (72×) |
-| 30 | 213.7 (178.9) | 60.6 (27.4) (6.5×) | 37.1 (4.1) (44×) |
-| 100 | 212.3 (178.2) | 61.6 (29.7) (6.0×) | 43.4 (10.6) (17×) |
-| 200 | 208.7 (174.3) | 59.0 (27.1) (6.4×) | 54.2 (22.3) (7.8×) |
+| 0 | 259.8 (225.0) | 58.6 (25.7) | — (no load point) |
+| 1 | 210.0 (174.7) | 56.7 (22.9) (7.6×) | **34.3 (1.2)** (≈146×) |
+| 5 | 208.1 (175.2) | 58.0 (25.0) (7.0×) | 34.9 (1.3) (≈135×) |
+| 10 | 213.5 (181.4) | 59.4 (26.0) (7.0×) | 35.1 (1.4) (≈130×) |
+| 30 | 212.4 (178.0) | 57.7 (24.8) (7.2×) | 34.5 (2.8) (≈64×) |
+| 100 | 210.4 (177.7) | 59.1 (25.0) (7.1×) | 43.1 (9.8) (≈18×) |
+| 200 | 207.0 (173.3) | 59.3 (26.0) (6.7×) | 46.2 (7.5) (≈23×) |
 
 Single cold lookup by dataset size, median of 7 runs, `total (work)` ms
-(fromJSON / nfk3; multipliers on work): 1k keys 34.9 (0.7) / 34.7 (1.1) —
-parity, both startup-bound; 50k 80.1 (46.3) / 41.1 (7.8), 5.9×; 200k
-212.7 (179.4) / 59.8 (25.9), 6.9×, vs 33.6 (0.6) ms sharded, 299× (1k/50k
+(fromJSON / nfk3; multipliers on work): 1k keys 34.9 (0.1) / 34.3 (1.1) —
+parity, both startup-bound; 50k 80.2 (45.9) / 39.7 (4.9), 9.4×; 200k
+210.0 (174.7) / 56.7 (22.9), 7.6×, vs 34.3 (1.2) ms sharded, ≈146× (1k/50k
 from `bench_marginal.json`; 200k from `bench_results.json`).
 
 ### Multiverse (31,904 attrs each; 256 shards)
 
 Median `total (work)` ms per cold eval (n = 200 row: min-of-7, work paired at
-the min-total run); Nix load floor this run: 34.0 ms (33.5–36.0); versions:
-4.83 MB JSON / 5.36 MB `.nfd3`, history: 6.88 MB JSON / 7.40 MB `.nfd3`:
+the min-total run); Nix load floor this run: 32.4 ms (23.5–34.7); versions:
+5.48 MB nested JSON / 5.10 MB `.nfd3`, history: 7.84 MB nested JSON /
+7.14 MB `.nfd3` (`fromJSON` parses the nested `index/*.json`; the flat
+files feed the builder):
 
-| lookups/eval | fromJSON | nfk3 | nfk3s |
-|---:|---:|---:|---:|
+| versions | 121–127 ms    | 10.1–15.2 | 2.9–16.5   |
+| history  | 221–228 ms    | 12.4–19.5 | 0.0–19.2   |
 | **versions** | | | |
-| 0 | 157.9 (123.6) | 43.4 (8.9) | — (no load point) |
-| 1 | 160.5 (126.9) | 46.0 (12.5) (10.2×) | **33.5 (−0.9)** |
-| 5 | 157.1 (123.5) | 44.0 (9.6) (13×) | 35.1 (0.7) (176×) |
-| 10 | 157.8 (124.2) | 44.5 (10.6) (12×) | 35.6 (1.7) (73×) |
-| 30 (lock file) | 158.6 (125.0) | 45.4 (11.5) (11×) | 36.7 (3.2) (39×) |
-| 100 | 159.9 (125.2) | 47.2 (12.5) (10×) | 44.6 (11.0) (11×) |
-| 200 | 158.8 (122.8) | 46.6 (11.1) (11×) | 51.7 (18.1) (6.8×) |
+| 0 | 157.4 (126.8) | 42.9 (10.1) | — (no load point) |
+| 1 | 157.2 (123.9) | 43.8 (12.6) (9.8×) | **35.3 (3.1)** (≈40×) |
+| 5 | 155.9 (122.6) | 42.7 (10.1) (12.1×) | 34.7 (2.9) (≈42×) |
+| 10 | 157.6 (123.1) | 43.5 (11.4) (10.8×) | 35.9 (4.8) (≈26×) |
+| 30 (lock file) | 157.4 (125.1) | 43.9 (11.4) (11×) | 37.9 (4.6) (≈27×) |
+| 100 | 157.9 (126.3) | 46.1 (15.2) (8.3×) | 42.5 (10.1) (≈13×) |
+| 200 | 155.4 (120.7) | 44.2 (11.1) (10.9×) | 50.1 (16.5) (≈7.3×) |
 | **history** | | | |
-| 0 | 254.9 (221.3) | 45.8 (11.9) | — (no load point) |
-| 1 | 261.9 (225.9) | 47.4 (12.8) (18×) | **34.4 (0.9)** (251×) |
-| 5 | 265.7 (230.3) | 47.0 (13.0) (18×) | 35.6 (2.0) (115×) |
-| 10 | 261.3 (227.7) | 55.9 (20.8) (11×) | 35.5 (1.8) (127×) |
-| 30 (lock file) | 254.0 (219.9) | 47.6 (12.8) (17×) | 37.1 (2.7) (81×) |
-| 100 | 257.7 (222.8) | 49.9 (15.5) (14×) | 44.3 (9.5) (23×) |
-| 200 | 253.1 (217.1) | 51.3 (17.7) (12×) | 44.7 (9.2) (24×) |
+| 0 | 254.9 (226.6) | 45.8 (16.3) | — (no load point) |
+| 1 | 256.4 (228.3) | 44.8 (12.4) (18.4×) | **33.3 (0.0)** |
+| 5 | 256.0 (223.7) | 46.5 (14.1) (15.9×) | 33.9 (1.5) (≈149×) |
+| 10 | 256.2 (224.1) | 46.2 (13.3) (16.8×) | 34.3 (2.0) (≈112×) |
+| 30 (lock file) | 255.1 (224.5) | 47.3 (14.9) (15.1×) | 36.9 (3.5) (≈64×) |
+| 100 | 259.0 (226.6) | 49.3 (19.5) (11.6×) | 44.0 (10.6) (≈21×) |
+| 200 | 253.2 (221.0) | 49.7 (16.2) (13.6×) | 51.7 (19.2) (≈11.5×) |
 
 (n = 0 semantics: `fromJSON` = parse plus one forced field read; `nfk3` =
 `db.count`, i.e. whole-table readFile + header read (the count is a header
@@ -358,93 +380,108 @@ floor):
     nfk3s(n)    ≈ floor + Σ readFile(shard) for distinct shards hit + probe-cost·n
 
 The floor is measured, not assumed: the harness runs the same cold
-invocation with an empty expression — **33.6 ms median** (31.9–34.8, parent
-run), **34.0 ms** (33.5–36.0, multiverse run) — and work is total minus
-floor, paired per run.
+invocation with an empty expression — **33.0 ms median** (23.2–38.7, parent
+run), **32.4 ms** (23.5–34.7, multiverse run) — and work is total minus
+the per-run floor.
 
 - **The intercept is the whole game.** `fromJSON`'s work term is flat
-  (~174–180 ms on the 200k table; ~123–127 ms versions, ~217–230 ms
+  (~173–181 ms on the 200k table; ~121–127 ms versions, ~221–228 ms
   history) because it must parse the whole file regardless of how many
   keys are asked for; its per-lookup cost after the parse is negligible.
 - **The sharded single-lookup number is essentially the floor.** nfk3s's
-  work at n = 1 is **0.6 ms** on 200k keys and **−0.9 to 0.9 ms** on the
-  multiverse tables: shard selection (`sha256`), one ~50–72 KB /
-  ~11–51 KB `readFile`, the header asserts, the static-table import, and one
-  probe all fit in ~1 ms. The ~34 ms total *is* the ~34 ms Nix load; the
-  ~299× (200k) / ~251× (multiverse history, N = 1) data-work speedup over
-  `fromJSON` comes entirely from not paying the parse + whole-file-read
-  work (at N = 1 on versions the sharded total sits at the floor itself).
-- **Single-file work is the readFile.** nfk3's work at n = 1: 25.9 ms
-  (14.7 MB table), 12.5–12.8 ms (multiverse); it grows slowly with n
-  (25.9 → 29.7 from n = 1 → 200, ~0.02 ms/lookup — probes are cheap, the
-  delta is mostly readFile variance).
-- **Crossover nfk3s vs nfk3:** on the 5.4–7.4 MB multiverse tables —
-  versions: sharded is ahead through n = 100 (44.6 vs 47.2 total; work 11.0
-  vs 12.5) and single-file takes over at n = 200 (46.6 vs 51.7 on the min
-  row; 49.6 vs 53.9 median) — crossover ~100–200. history: sharded ahead
-  through n = 100 (44.3 vs 49.9; work 9.5 vs 15.5); at n = 200 the min row
-  still favors sharded (44.7 vs 51.3; work 9.2 vs 17.7) while the median
-  favors single-file (55.0 vs 52.7; work 21.2 vs 18.7) — crossover at the
-  top of the measured range. On the 14.7 MB 200k-key table the single-file
-  readFile keeps nfk3s ahead across the whole measured range (54.2 vs 59.0
-  total at n = 200; work 22.3 vs 27.1); the crossover is beyond 200 lookups
-  there.
+  work at n = 1 is **1.2 ms** on 200k keys and **0.0–3.1 ms** on the
+  multiverse tables: shard selection (`sha256`), one ~46–62 KB /
+  ~11–35 KB / ~15–50 KB `readFile`, the header asserts, the static-table
+  import, and the probe (a key read + byte compare at every occupied slot)
+  all fit in a few ms. The ~34 ms total *is* the ~32–33 ms Nix load; the
+  ≈146× (200k) / up to ≈149× (multiverse history, N = 5) data-work speedup
+  over `fromJSON` comes entirely from not paying the parse +
+  whole-file-read work (at N = 1 on history the sharded work rounds to
+  0.0 and the total sits at the floor itself).
+- **Single-file work is the readFile.** nfk3's work at n = 1: 22.9 ms
+  (13.7 MB table), 12.4–12.6 ms (multiverse); it grows slowly with n
+  (22.9 → 32.2 median at n = 200 on the 200k table; 26.0 on the min row —
+  probes are cheap, the delta is mostly readFile variance).
+- **Crossover nfk3s vs nfk3:** on the 5.1–7.1 MB multiverse tables —
+  versions: sharded is ahead through n = 100 (42.5 vs 46.1 total; work 10.1
+  vs 15.2) and single-file takes over at n = 200 (50.1 vs 44.2 on the min
+  row; work 16.5 vs 11.1) — crossover ~100–200. history: sharded ahead
+  through n = 100 (44.0 vs 49.3; work 10.6 vs 19.5); at n = 200
+  single-file takes over (51.7 vs 49.7 on the min row, work 19.2 vs 16.2;
+  54.1 vs 51.2 median) — crossover ~100–200. On the 13.7 MB 200k-key table
+  the single-file readFile keeps nfk3s ahead across the whole measured
+  range (46.2 vs 59.3 total at n = 200; work 7.5 vs 26.0); the crossover
+  is beyond 200 lookups there.
 - **The sharded slope.** nfk3s's work rises as queries spread across the
-  256 shards — 0.6 → 22.3 ms (200k), −0.9 → 18.1 ms (versions), 0.9 → 9.2
-  ms (history) from n = 1 → 200 (min rows), ~0.04–0.11 ms/lookup; each new
-  distinct shard pays one ~0.1–0.2 ms import per eval.
+  256 shards — 1.2 → 7.5–19.5 ms (200k), 3.1 → 16.5–18.7 ms (versions),
+  0.0 → 19.2–23.4 ms (history), n = 1 (median) → n = 200 (min → median),
+  ~0.03–0.12 ms/lookup; each new distinct shard pays one readFile + header
+  cost per eval.
 - **Bulk scans tip back to `fromJSON`** — above the crossover, parsing
-  once and indexing the attrset beats per-lookup file slicing; if an eval
-  touches most of the table, `fromJSON` wins.
+  once and indexing the attrset beats per-lookup file slicing: a full
+  31,904-key scan with every value serialized takes 0.38 s (`fromJSON`)
+  vs 0.89 / 2.49 s (nfk3 / nfk3s); if an eval touches most of the table,
+  `fromJSON` wins.
 
 Verdict from the numbers:
 
 - **NFK v3 (single file)** beats `fromJSON` at every measured point on
-  50k+ entry tables, on the data work (startup excluded): 5.9× at 50k keys,
-  6.9× at n = 1 and 6.4× at n = 200 on the 200k-key table (work ~26–30 ms
-  vs ~174–180 ms), 10–13× on versions, 11–18× on history. At 1k keys the
-  two are at parity (work ~1–2 ms each — startup-bound).
+  50k+ entry tables, on the data work (startup excluded): 9.4× at 50k keys,
+  7.6× at n = 1 and 6.7× at n = 200 on the 200k-key table (work ~23–32 ms
+  vs ~173–181 ms), 8–12× on versions, 11–18× on history. At 1k keys the
+  two are at parity (work 1.1 vs 0.1 ms — startup-bound).
 - **Sharded NFK v3** adds the low-query regime: a single cold lookup
-  costs ~34 ms total on a 200k-key table (work 0.6 ms) — ~299× the data
+  costs ~34 ms total on a 200k-key table (work 1.2 ms) — ≈146× the data
   work of `fromJSON` — and stays ahead of single-file NFK v3 up to
-  ~100–200 lookups on the 5.4–7.4 MB multiverse tables and across the
-  whole measured range on the 14.7 MB table.
+  ~100–200 lookups on both multiverse tables and across the whole measured
+  range on the 13.7 MB table.
 - **`fromJSON`** remains the right tool when one evaluation touches a large
   fraction of the table (bulk in-process scan).
 
 ## Trade-offs (summary)
 
 1. **Per-lookup cost in-process** is small for both NFK v3 variants
-   (probe walk ≈ 1–2 steps; a few `substring`s + table lookups per step),
-   but neither can beat `fromJSON`'s sub-ms attrset access when one eval
-   touches most of the table — the crossover analysis above quantifies that.
+   (probe walk ≈ 1.5 steps at load 0.49, ≈ 2.6 at load 0.76; a few
+   `substring`s + table lookups per step), but neither can beat
+   `fromJSON`'s sub-ms attrset access when one eval touches most of the
+   table — the crossover analysis above quantifies that, and the measured
+   bulk scan (0.38 s `fromJSON` vs 0.89 / 2.49 s NFK v3 over 31,904 keys
+   with every value serialized) confirms it. The key is read and
+   byte-compared at every occupied walk step — the cost of having no
+   fingerprint to pre-filter slots; it can never yield a wrong value.
 2. **Cold / repeated invocations**: NFK v3 beats `fromJSON` up to the
    crossover (beyond 200 lookups/eval on every table measured; sharded vs
-   single-file: ~100–200 on versions, at the top of the measured range on
-   history). At ~1k entries
-   all approaches tie: ~34 ms total each, of which ~1 ms is data work —
+   single-file: ~100–200 on both multiverse tables). At ~1k entries
+   all approaches tie: ~34 ms total each, of which ~0–1 ms is data work —
    the rest is Nix itself loading.
-3. **File size**: 1.05× the JSON at 50k and 200k keys (index is ~16% of the
-   file); 1.15× at 1k keys where the fixed 16-byte header + 18,432-byte
-   index (M = 2,048) dominate. Parameterized field widths (revision 2)
-   dropped the fixed 15-byte rev-1 entries (no padding) and cut the 200k-key
-   file from 16.3 MB to 14.7 MB. Moving the 255-byte decode table out of
-   the files saved 255 B per file (and per shard) and made the sharded
-   reader simpler.
-4. **Hashing**: one `sha256` per lookup. The 24-bit fingerprint implies
-   ≈ 0.012 expected false fingerprint matches per lookup at 200k keys
-   (≈ 1,190 colliding key pairs total); a false match costs one extra
-   key read + compare and can never produce a wrong value.
+3. **File size**: 0.98× the JSON at 50k and 200k keys (the index is
+   ~9.6% of the file); 1.03× at 1k keys, where the fixed 16-byte header +
+   10,240-byte index (M = 2,048) are 14.5% of the file. Parameterized
+   field widths (revision 2) dropped the fixed 15-byte rev-1 entries (no
+   padding) and cut the 200k-key file from 16.3 MB to 14.7 MB; moving the
+   255-byte decode table out of the files saved 255 B per file (and per
+   shard) and made the sharded reader simpler; removing the fingerprint
+   field (revision 6) cut the 200k-key single file from 14,700,668 to
+   13,652,092 B (−7.1%), the 1k-key table by −10.4%, and the 256-file
+   large-shard build from 14,688,364 to 13,492,332 B (−8.1%). Per-table
+   minimum widths still pay off on small shards: every shard keeps
+   shard-local `koffW` at 2 b254 digits, and empty shards (M = 16) get the
+   minimum widths.
+4. **Hashing**: one `sha256` per lookup, used twice — 8 hex chars
+   `[56:64)` seed the probe, and (in sharded builds) 1–3 hex chars
+   `[24:24+d)` name the shard; with no fingerprint, every occupied slot
+   in the walk is key-compared and a wrong value is impossible by
+   construction.
 5. **Static only**: the database is precomputed and immutable at build
    time; adding keys requires re-running the builder (< 2 s for 200k keys;
    sharded rebuilds parallelize per shard).
 6. **No `parseInt` / no `%` / no `or` on this Nix**: b254 decoding is 1–4
    static-table lookups per field (width-specialized thunks; widths from
-   the header) plus a 6-char and an 8-char `* 16 +` hex fold (fingerprint
-   `+ 1`; probe seed `bitAnd`-masked to `M − 1`); probe wrap is `bitAnd`
-   on a power-of-two `M`.
+   the header) plus one 8-char `* 16 +` hex fold for the probe seed
+   (`bitAnd`-masked to `M − 1`); probe wrap is `bitAnd` on a
+   power-of-two `M`.
 7. **Memory**: each lookup allocates a constant number of heap strings
-   (fingerprint/key/value fragments); no table is materialised in Nix
+   (probe-seed and key/value fragments); no table is materialised in Nix
    memory at import.
 8. **The static table must sit next to `kv3.nix`** (imported by relative
    path). It is a deterministic function of the format — one correct
@@ -474,7 +511,8 @@ python3 ../build_db3.py versions_flat.json versions.nfd3 --check
 python3 ../build_db3.py history_flat.json history.nfd3 --check
 python3 ../build_db3.py versions_flat.json --shards 256 --prefix versions_shards/ --check
 python3 ../build_db3.py history_flat.json --shards 256 --prefix history_shards/ --check
-nix eval --impure --json --expr '(import ./test_correctness_shards.nix) { dir = ./versions_shards; jsonPath = ./versions_flat.json; }'
+nix eval --impure --json --expr '(import ./test_correctness.nix) { table = ./versions.nfd3; jsonPath = ./index/versions.json; }'
+nix eval --impure --json --expr '(import ./test_correctness_shards.nix) { dir = ./versions_shards; jsonPath = ./index/versions.json; }'
 python3 bench.py 7
 ```
 
@@ -483,9 +521,9 @@ Example lookups (same key, both access modes — same value):
 ```sh
 nix eval --impure --raw --expr \
   '((import ./kv3.nix) ./data/large.nfd3).get "pkgs484.env795.nix877.pkgs793"'
-# -> chde4cf665ukuewyy-tx        (single file, ~60 ms total / ~26 ms work)
+# -> chde4cf665ukuewyy-tx        (single file, ~57 ms total / ~23 ms work)
 
 nix eval --impure --raw --expr \
   '(import ./kv3s.nix { digits = 2; dir = ./data/large_shards; }).get "pkgs484.env795.nix877.pkgs793"'
-# -> chde4cf665ukuewyy-tx        (256 shards, ~34 ms total / ~0.6 ms work — reads one ~50–72 KB shard)
+# -> chde4cf665ukuewyy-tx        (256 shards, ~34 ms total / ~1.2 ms work — reads one ~46–62 KB shard)
 ```

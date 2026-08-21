@@ -1,5 +1,15 @@
 # NFK v3 improvement suggestions
 
+**Superseded (2026-08-21):** revision 6 removed the 24-bit fingerprint field
+from the slot — the probe now byte-compares the key at every occupied slot
+(see `REPORT.md`). This makes Tier 2 (v4 hex fp) moot, turns the
+"drop the fingerprint, compare keys directly" row under *Considered and
+rejected* into the implemented design, and the fp-era 15-byte slot
+(fp `dec4` + keyOff `dec4` + keyLen `dec3` + valLen `dec3` + pad) no longer
+exists (rev 6: EW = koffW + klenW + vlenW = 5–6 shipped single files, 4–5
+shards). All measured numbers below predate rev 6; current results are in
+`bench_results.json` / `multiverse-faster/bench_results.json`.
+
 2026-08-20. Grounded in the current code (`kv3.nix`, `kv3s.nix`,
 `nfd3-table.nix`, `build_db3.py`) and the measured 3-method benchmarks
 (fromJSON / nfk3 / nfk3s; parent 200k `large` dataset and the

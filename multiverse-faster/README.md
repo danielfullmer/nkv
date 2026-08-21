@@ -34,7 +34,7 @@ NFK3 value = the inner map, stored as a compact JSON document,
 |---|---|
 | `convert.py` | `index/*.json` → `{ attr: innerMap }` flat JSON |
 | `versions_flat.json`, `history_flat.json` | flattened inputs (generated) |
-| `versions.nfd3` (5,361,121 B), `history.nfd3` (7,404,371 B) | NFK3 tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nfd3-table.nix`) |
+| `versions.nfd3` (5,098,977 B), `history.nfd3` (7,142,227 B) | NFK3 tables, N=31,904, M=65,536, load 0.487 (generated; decode table lives in the static `../nfd3-table.nix`) |
 | `test_correctness.nix` | every-attr `getJson` vs `fromJSON` oracle |
 | `bench.py`, `bench_results.json` | cold-eval benchmark harness + results |
 | `versions_shards/`, `history_shards/` | 256 sharded NFK3 tables each (`<h[24:26]>.nfd3`; generated) |
@@ -89,79 +89,81 @@ python3 bench.py [runs_per_config]   # default 3; writes bench_results.json
 
 The harness also measures the **Nix load floor** — a cold empty eval with
 the identical invocation style (`nix eval --impure --raw --expr '""'`, no
-file read, no lookup): **34.0 ms median** this run (33.5–36.0). Results
+file read, no lookup): **32.4 ms median** this run (23.5–34.7). Results
 below show `total (work)` ms, where work = total − floor, paired per run;
-the × multipliers are on work (fromJSON work ÷ method work), so the ~34 ms
+the × multipliers are on work (fromJSON work ÷ method work), so the ~32–33 ms
 startup drops out of both; the raw baseline series is in `bench_results.json`
 (`baseline`).
 
 ## Results (median of 7 cold runs; n = 200 row: min-of-7, `total (work)` ms; Nix 2.34.7)
 
-**versions.json** — fromJSON's work term is ~123–127 ms (parse of the
-4.8 MB file) no matter how many queries it answers (total ~157–161 ms);
-sharded NFK3 (256 files, `kv3s.nix`) only reads the key's shard:
+**versions.json** — fromJSON's work term is ~121–127 ms (parse of the
+5.48 MB nested `index/versions.json`) no matter how many queries it answers
+(total ~155–158 ms); sharded NFK3 (256 files, `kv3s.nix`) only reads the key's shard:
 
 | N queries | fromJSON | NFK3 | NFK3 sharded |
 |---:|---:|---:|---:|
-| 0 | 157.9 (123.6) | 43.4 (8.9) | — |
-| 1 | 160.5 (126.9) | 46.0 (12.5) (10.2×) | **33.5 (−0.9)** |
-| 5 | 157.1 (123.5) | 44.0 (9.6) (13×) | 35.1 (0.7) (176×) |
-| 10 | 157.8 (124.2) | 44.5 (10.6) (12×) | 35.6 (1.7) (73×) |
-| 30 (lock file) | 158.6 (125.0) | 45.4 (11.5) (11×) | 36.7 (3.2) (39×) |
-| 100 | 159.9 (125.2) | 47.2 (12.5) (10×) | 44.6 (11.0) (11×) |
-| 200 | 158.8 (122.8) | 46.6 (11.1) (11×) | 51.7 (18.1) (6.8×) |
+| 0 | 157.4 (126.8) | 42.9 (10.1) | — |
+| 1 | 157.2 (123.9) | 43.8 (12.6) (9.8×) | **35.3 (3.1)** (≈40×) |
+| 5 | 155.9 (122.6) | 42.7 (10.1) (12.1×) | 34.7 (2.9) (≈42×) |
+| 10 | 157.6 (123.1) | 43.5 (11.4) (10.8×) | 35.9 (4.8) (≈26×) |
+| 30 (lock file) | 157.4 (125.1) | 43.9 (11.4) (11×) | 37.9 (4.6) (≈27×) |
+| 100 | 157.9 (126.3) | 46.1 (15.2) (8.3×) | 42.5 (10.1) (≈13×) |
+| 200 | 155.4 (120.7) | 44.2 (11.1) (10.9×) | 50.1 (16.5) (≈7.3×) |
 
 **history.json** (larger file, larger values):
 
 | N queries | fromJSON | NFK3 | NFK3 sharded |
 |---:|---:|---:|---:|
-| 0 | 254.9 (221.3) | 45.8 (11.9) | — |
-| 1 | 261.9 (225.9) | 47.4 (12.8) (18×) | **34.4 (0.9)** (251×) |
-| 5 | 265.7 (230.3) | 47.0 (13.0) (18×) | 35.6 (2.0) (115×) |
-| 10 | 261.3 (227.7) | 55.9 (20.8) (11×) | 35.5 (1.8) (127×) |
-| 30 (lock file) | 254.0 (219.9) | 47.6 (12.8) (17×) | 37.1 (2.7) (81×) |
-| 100 | 257.7 (222.8) | 49.9 (15.5) (14×) | 44.3 (9.5) (23×) |
-| 200 | 253.1 (217.1) | 51.3 (17.7) (12×) | 44.7 (9.2) (24×) |
+| 0 | 254.9 (226.6) | 45.8 (16.3) | — |
+| 1 | 256.4 (228.3) | 44.8 (12.4) (18.4×) | **33.3 (0.0)** |
+| 5 | 256.0 (223.7) | 46.5 (14.1) (15.9×) | 33.9 (1.5) (≈149×) |
+| 10 | 256.2 (224.1) | 46.2 (13.3) (16.8×) | 34.3 (2.0) (≈112×) |
+| 30 (lock file) | 255.1 (224.5) | 47.3 (14.9) (15.1×) | 36.9 (3.5) (≈64×) |
+| 100 | 259.0 (226.6) | 49.3 (19.5) (11.6×) | 44.0 (10.6) (≈21×) |
+| 200 | 253.2 (221.0) | 49.7 (16.2) (13.6×) | 51.7 (19.2) (≈11.5×) |
 
 ## Findings
 
 - **The intercept is the whole game.** fromJSON's work term is flat
-  (~123–127 ms versions, ~217–230 ms history regardless of N — total
-  ~157–161 / ~253–266 ms; matching the article's flat ~0.29 s curve)
+  (~121–127 ms versions, ~221–228 ms history regardless of N — total
+  ~155–158 / ~253–259 ms; the article's flat ~0.29 s),
   because it must parse the entire file; each extra query costs ~0
   (attrset lookup). NFK3's intercept is the measured `nix eval` load
-  floor (34.0 ms median here) plus one file read (the decode table is
+  floor (32.4 ms median here) plus one file read (the decode table is
   the static `../nfd3-table.nix`, imported once per eval); each query
-  costs a 24-bit fingerprint probe plus `fromJSON` of a ≤11 KB value
-  document.
+  costs a few key-read probe steps — key bytes compared at every
+  occupied slot, so a wrong value is impossible by construction — plus
+  `fromJSON` of a ≤11 KB value document.
 - **NFK3 wins at every N**, including a single query, on the data work
-  (startup excluded): 10–13× on versions, 11–18× on history (single
-  file); sharded is 6.8–176× (versions) and 23–251× (history, low query
-  counts). For a 30-package lock file: ~37/37 ms sharded (work
-  3.2/2.7 ms) vs ~159/254 ms total fromJSON.
+  (startup excluded): 8–12× on versions, 11–18× on history (single
+  file); sharded is 7–42× (versions) and 11–149× (history, N ≥ 5, low
+  query counts; at N = 1 the history sharded work rounds to 0.0). For a
+  30-package lock file: ~37.9/36.9 ms sharded (work 4.6/3.5 ms) vs
+  ~157/255 ms total fromJSON.
 - **The sharded single-lookup number is essentially the Nix load.** The
-  single-lookup total drops from 46.0/47.4 ms (single file) to
-  33.5/34.4 ms (sharded) — work −0.9/0.9 ms — against a measured 34.0 ms
-  floor: an ~11–51 KB shard read plus one probe nearly vanishes into the
-  startup. On the data work, sharded NFK3 is ~251× (history) the fromJSON
-  parse + whole-file-read work (at N = 1 the sharded total is the floor).
-  The sharded reader imports the static `nfd3-table.nix` once per eval no
-  matter how many shards are touched, so a shard import is just a
-  readFile + header asserts.
+  single-lookup total drops from 43.8/44.8 ms (single file) to
+  35.3/33.3 ms (sharded) — work 3.1/0.0 ms — against a measured 32.4 ms
+  floor: an ~11–50 KB shard read plus a few probe steps nearly vanishes
+  into the startup. On the data work, sharded NFK3 is ~149× (history) /
+  ≈40× (versions) the fromJSON parse + whole-file-read work (at N = 1 the
+  sharded work rounds to 0.0). Only one or a few distinct shards are
+  touched, so a shard import is just a readFile + header asserts.
 - **Sharding wins from a single lookup to ~100–200 lookups/eval.** The
   query set spans ~N distinct shards, so each new shard costs one
-  ~0.1–0.2 ms import and sharded's work climbs −0.9 → 18.1 ms (versions)
-  and 0.9 → 9.2 ms (history) by N=200, versus 12.5 → 11.1 / 12.8 → 17.7
-  for single-file. versions: sharded ahead through N=100 (44.6 vs 47.2;
-  work 11.0 vs 12.5), single-file takes over at N=200 (46.6 vs 51.7 on
-  the min row; 49.6 vs 53.9 median) — crossover ~100–200. history:
-  sharded ahead through N=100 (44.3 vs 49.9; work 9.5 vs 15.5); at N=200
-  the min row favors sharded (44.7 vs 51.3) while the median favors
-  single-file (55.0 vs 52.7) — crossover at the top of the measured
-  range. Use `kv3s.nix` for lock-file-style workloads (≲ 100
-  lookups/eval) and `kv3.nix` for large single-eval lookup sets.
-- Table size ≈ input size (5.36 MB vs 4.83 MB `versions_flat.json`,
-  1.11×; 7.40 MB vs 6.88 MB `history_flat.json`, 1.08×), unlike the
+  ~0.1–0.2 ms import and sharded's work climbs 3.1 → 16.5 ms (versions)
+  and 0.0 → 19.2 ms (history) by N=200 (min row; medians reach
+  18.7/23.4), versus 12.6 → 11.1 / 12.4 → 16.2 for single-file.
+  versions: sharded ahead through N=100 (42.5 vs 46.1; work 10.1 vs
+  15.2), single-file takes over at N=200 (50.1 vs 44.2 on the min row;
+  50.7 vs 46.5 median) — crossover ~100–200. history: sharded ahead
+  through N=100 (44.0 vs 49.3; work 10.6 vs 19.5); at N=200 single-file
+  takes over (51.7 vs 49.7 on the min row; 54.1 vs 51.2 median) —
+  crossover at the top of the measured range. Use `kv3s.nix` for
+  lock-file-style workloads (≲ 100 lookups/eval) and `kv3.nix` for
+  large single-eval lookup sets.
+- Table size ≈ input size (5.10 MB vs 4.83 MB `versions_flat.json`,
+  1.06×; 7.14 MB vs 6.88 MB `history_flat.json`, 1.04×), unlike the
   article's giant-.nix alternative (6.0 MiB, 1.13×, and 1.7× memory per
   the article).
 - Absolute numbers differ from the article's ~0.29 s fromJSON baseline

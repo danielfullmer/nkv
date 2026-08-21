@@ -32,9 +32,10 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 KV3 = os.path.join(HERE, "kv3.nix")
 KV3S = os.path.join(HERE, "kv3s.nix")
-JSON = os.path.join(HERE, "data/large.json")
-TABLE = os.path.join(HERE, "data/large.nfd3")
-SHARDS = os.path.join(HERE, "data/large_shards")
+JSON = os.environ.get("NFK_JSON", os.path.join(HERE, "data/large.json"))
+TABLE = os.environ.get("NFK_TABLE", os.path.join(HERE, "data/large.nfd3"))
+SHARDS = os.environ.get("NFK_SHARDS", os.path.join(HERE, "data/large_shards"))
+OUT = os.environ.get("NFK_OUT", os.path.join(HERE, "bench_results.json"))
 NQS = 200
 NS = [0, 1, 5, 10, 30, 100, 200]
 
@@ -139,9 +140,9 @@ def main():
             for m in res), flush=True)
     print(f"baseline (nix load): min={out['baseline']['ms_min']} "
           f"med={out['baseline']['ms_median']}", flush=True)
-    with open(os.path.join(HERE, "bench_results.json"), "w") as f:
+    with open(OUT, "w") as f:
         json.dump(out, f, indent=2)
-    print("wrote bench_results.json")
+    print(f"wrote {OUT}")
 
 
 if __name__ == "__main__":

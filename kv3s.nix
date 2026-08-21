@@ -2,8 +2,8 @@
 #
 # A sharded table is a directory of NFK v3 files, one per shard slice of the
 # key hash: <dir>/<h[24:24+d]>.nfd3 where h = sha256(key) in lowercase hex
-# and d = digits. The slice is disjoint from the fp slice 0..6 and the s0
-# slice 56..64 that kv3.nix uses, so sharding does not perturb the probing
+# and d = digits. The slice is disjoint from the probe-seed slice
+# h[56:64] that kv3.nix uses, so sharding does not perturb the probing
 # distribution. The builder writes every shard (empty ones are valid NFK v3
 # files with N = 0, M = 16), so a key always resolves to an existing file:
 #
