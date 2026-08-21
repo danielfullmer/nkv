@@ -3,41 +3,48 @@
 A lookup function for static string→string tables in **pure Nix** (no
 `builtins.exec`, no `builtins.fromJSON`, no foreign interpreters), backed by a
 precomputed database file read with `builtins.readFile` and sliced with
-`builtins.substring`. Four formats:
-- **NFK v1** — hash-based: sha256 fingerprint + linear probing (open
-  addressing), 40-byte index entry, load factor ≤ 0.5.
-- **NFK v2** ("dense NFK") — same hash + probe scheme, but a 22-byte index
-  entry, load factor ≤ 0.8, and a shorter 32-bit fingerprint: ~1.8× smaller
-  than NFK v1 at equal correctness.
-- **NKB v1** — byte-sorted keys + binary search, no hashing at all (the
-  implementation is literally `readFile` + `substring` + arithmetic).
-- **NKB v2** ("binary NKB") — same sorted keys + binary search, but a raw
-  binary index (14-byte entries, no NUL anywhere); the byte→int decode
-  table is embedded in the file and built at import time.
+`builtins.substring` (+ `hashString` for the hash formats). Five formats:
+
+- **NFK v1** — open-addressing hash table (sha256), 40-byte ASCII entries.
+- **NFK v2** — same scheme, dense 22-byte base-36 entries (load ≤ 0.8).
+- **NKB v1** — sorted binary search over keys, 24-byte base-255 ASCII
+  entries (diffable).
+- **NKB v2** — same sorted scheme, raw binary b254 index (14-byte entries),
+  with the byte→int decode table embedded in the file; smallest file of
+  all and lowest readFile floor (byte-string premise: Nix I/O strings are
+  arbitrary bytes minus NUL, and only source *literals* are
+  UTF-8-decoded — verified on Nix 2.34.7).
+- **NFK v3** — NFK v2's hash + probe scheme on NKB v2's binary machinery:
+  15-byte entries, 24-bit fingerprint, decode table carried in the file.
+  10% smaller than NFK v2, 7% larger than NKB v2; the fastest multi-lookup
+  eval in this session.
 
 ## Summary
 
 | | result |
 |---|---|
-| Correctness | 1,004,020 lookups across all four formats verified against a `fromJSON` oracle: **0 mismatches** (all 3 datasets, every key, plus miss and edge-case checks) |
-| Cold single lookup, 200k entries | NKB v2 **61.6 ms** vs NFK v2 79.5 ≈ NKB v1 80.7 vs NFK v1 98.0 vs fromJSON **211.5 ms** → 3.43× / 2.66× / 2.62× / 2.15× |
-| Cold single lookup, 50k entries | NKB v2 **40.0 ms** vs NKB v1 41.7 ≈ NFK v2 42.5 vs NFK v1 46.5 vs fromJSON **78.4 ms** → 1.96× / 1.88× / 1.84× / 1.69× |
-| 200 lookups in one eval, 200k entries | NFK v2 **83.6 ms** vs NKB v2 85.8 vs NKB v1 96.1 vs NFK v1 99.7 vs fromJSON **210.7 ms** → 2.52× / 2.46× / 2.19× / 2.11× |
-| Cold single lookup, 1k entries | 33–35 ms all methods → parity (Nix process startup dominates) |
-| In-process per-lookup (after load) | fromJSON attrset < 1 µs; NFK v1 ≈ 0–17 µs; NFK v2 ≈ 15–22 µs; NKB v1 ≈ 40–92 µs; NKB v2 ≈ 46–105 µs — see trade-offs |
+| Correctness | 1,255,025 lookups verified against the `fromJSON` oracle across all five formats: **0 mismatches** (every key, all 3 datasets, plus miss and edge cases) |
+| Cold single lookup, 200k entries | NKB v2 **60.0 ms** ≈ NFK v3 60.2 vs NKB v1 79.8 ≈ NFK v2 81.1 vs NFK v1 98.7 vs `fromJSON` **209.8 ms** → 3.50× / 3.49× / 2.63× / 2.59× / 2.13× |
+| Cold single lookup, 50k entries | NFK v3 **39.8 ms** vs NKB v2 40.4 vs NKB v1 41.6 ≈ NFK v2 41.8 vs NFK v1 46.3 vs `fromJSON` **78.4 ms** → 1.97× / 1.94× / 1.88× / 1.88× / 1.69× |
+| 200 lookups in one eval, 200k entries | NFK v3 **72.0 ms** vs NFK v2 82.1 vs NKB v2 84.9 vs NKB v1 97.1 vs NFK v1 105.4 vs `fromJSON` **208.5 ms** → 2.90× / 2.54× / 2.46× / 2.15× / 1.98× |
+| Cold single lookup, 1k entries | 33–35 ms across all methods → parity (Nix process startup dominates) |
+| In-process per-lookup (after load) | `fromJSON` attrset < 1 µs; NFK v3 ≈ 4–31 µs; NFK v2 ≈ 10–16 µs; NFK v1 ≈ 0–17 µs (noise-limited at 200k); NKB v1 ≈ 46–91 µs; NKB v2 ≈ 54–96 µs — see trade-offs |
 
-The headline: every `nix eval` is a cold process that must load its data
-source. `builtins.fromJSON` pays a **full parse of the whole file** on every
-invocation (≈150–210 ms for the 14 MB table below), regardless of how many
-keys you look up. The custom formats replace that parse with a byte read:
-NFK pays one `hashString` plus a ≤ M-slot probe; NKB pays a ≤ ⌈log₂(N)⌉
-binary search over byte-sorted keys. NFK v2 (dense) keeps the fast hash
-lookup while shrinking the index to 22-byte entries at load ≤ 0.8, cutting
-the file from 33.3 MB to 18.1 MB at 200k keys. NKB v2 is the smallest file
-of all (15.1 MB, 1.09× JSON) and the fastest cold single lookup in this
-session (61.6 ms at 200k, 3.4× vs fromJSON); NFK v2 remains the fastest
-when one eval does hundreds of lookups (83.6 ms warm-200 at 200k vs
-NKB v2 85.8).
+**Headline.** Every `nix eval` is a cold process: startup (~33 ms) + reading
+the file + (for `fromJSON`) a full parse of the whole file — ≈201 ms for
+the 14 MB table below — *regardless of how many keys are looked up*.
+The custom formats replace that parse with a byte read: NFK pays one
+`hashString` and a probe of ≤ M slots; NKB pays a binary search of ≤
+⌈log₂(N)⌉ over byte-sorted keys. The v2 line densified both: NFK v2
+shrinks the hash index to 22-byte entries (load ≤ 0.8), and NKB v2 moves
+the structural fields to raw b254 binary with the decode table carried in
+the file. **NFK v3 — NFK v2's hash table on NKB v2's binary machinery
+(15-byte entries, 16.3 MB = 1.17× JSON) — is the overall champion for
+typical workloads: 72.0 ms warm-200 at 200k (2.9× over `fromJSON`) and a
+cold near-tie with NKB v2 (60.2 vs 60.0; NFK v3 wins at 50k, 39.8 vs
+40.4). NKB v2 stays the smallest file of all (15.1 MB, 1.09× JSON) and the
+lowest-floor format (57.3 ms); NFK v2 (9.9 µs/lookup at 200k) takes over
+  above ~800 lookups/eval.
 
 ## File format: NFK v1
 
@@ -242,7 +249,7 @@ offset 64 + M·22                data region, variable
 per entry, insertion order, absolute offsets from the region start.
 
 **Limits**: data region < 36⁶ (~2.18 GB); key/value < 36⁴ (~1.68 MB);
-M ≤ 10⁹ (header).
+M, N < 10¹⁰ (10-digit decimal header).
 
 **Collision note** — a 32-bit fingerprint means ~N²/2³² ≈ 5 false fp matches
 are expected in a 200k table. A false match only costs one extra key read
@@ -316,6 +323,74 @@ Measured sizes (JSON → NKB v2):
 2.0 MB (11.7%) smaller than NKB v1, and the whole table is 1.09× the JSON
 size vs 1.23×. The 255-byte table is 0.2% of the large file.
 
+## File format: NFK v3 (binary hash index)
+
+NFK v3 combines the two v2-line improvements: NFK v2's dense hash table
+(`M = next_pow2(max(16, ⌈1.25·N⌉))`, load ≤ 0.8) and NKB v2's binary index
+machinery (b254 fields, byte table embedded in the file). The result is a
+hash index nearly as dense as a sorted one — 15-byte entries — with O(1)
+expected probes:
+
+```
+offset 0                        header, 64 bytes
+offset 64                       byte table T: 0x01 … 0xFF (255 bytes)
+offset 319                      index region, M × 15 bytes
+offset 319 + M·15               data region: for each entry (insertion
+                                order), the key bytes immediately followed
+                                by the value bytes
+```
+
+**Header (64 bytes)**
+
+| field | offset | width | value |
+|---|---|---|---|
+| magic | 0 | 4 | `NFK3` |
+| N | 4 | 3 | entry count (3 b254 bytes) |
+| M | 7 | 4 | table size (4 b254 bytes, power of two) |
+| keyTotal | 11 | 3 | total key bytes (3 b254 bytes) |
+| valTotal | 14 | 3 | total value bytes (3 b254 bytes) |
+| – | 17 | 47 | reserved (spaces) |
+
+**Index region** — one 15-byte entry per table slot `s` at offset
+`319 + 15s`:
+
+| field | offset | width | meaning |
+|---|---|---|---|
+| `fp` | 0 | 4 | `int(sha256(key) hex [0:6], 16) + 1` (24-bit); 0 = unused slot |
+| `keyOff` | 4 | 4 | absolute file offset of the key |
+| `keyLen` | 8 | 3 | key length (bytes) |
+| `valLen` | 11 | 3 | value length (bytes); the value is at `keyOff + keyLen` |
+| – | 14 | 1 | padding |
+
+An unused slot is all zeros, i.e. 15 bytes of `0x01`. Because the data
+region is interleaved (key bytes immediately followed by value bytes), the
+value offset is implicit — one 4-byte field saved versus NKB v2's entry, at
+the cost of 1 padding byte.
+
+**Placement** — `s0 = int(h[56:64], 16) AND (M − 1)` with linear probing
+(the probe at lookup time walks the same slots; identical to NFK v2). The
+24-bit fingerprint (NFK v2 uses 32 bits) implies ~N/2²⁴ ≈ 0.012 false fp
+matches expected per lookup at 200k keys (≈2,400 in total) — each costs one
+extra key read + compare and can never yield a wrong value.
+
+**Limits** (builder-enforced): N, keyTotal, valTotal, and each key/value
+length < 254³ (≈16.4 MB); M and file offsets < 254⁴ (≈4.16 GB); no NUL
+anywhere. The independent `--check` parser re-validates the magic, the
+embedded table, and the exact file size, and re-probes every key.
+
+Measured sizes (JSON → NFK v3):
+
+| dataset | keys | JSON bytes | NFK v3 bytes | index bytes | ratio |
+|---|---|---:|---:|---:|---:|
+| small | 1,005 | 68,534 | 91,533 | 30,720 | 1.34× |
+| medium | 50,000 | 3,463,238 | 4,046,597 | 983,040 | 1.17× |
+| large | 200,000 | 13,941,356 | 16,273,835 | 3,932,160 | 1.17× |
+
+15-byte entries vs NFK v2's 22-byte entries (1.47× denser) and NKB v2's
+14-byte entries (1 byte more, the fingerprint); the large file is 1.8 MB
+(10.1%) smaller than NFK v2 and 1.1 MB (7.5%) larger than NKB v2 — a hash
+index within 7% of the smallest file of all.
+
 ## Implementation
 
 Files in this repo:
@@ -323,20 +398,22 @@ Files in this repo:
 | file | purpose |
 |---|---|
 | `kv.nix` | NFK v1 lookup module (self-contained, no generator) |
-| `kv2.nix` | NFK v2 (dense) lookup module (self-contained, no generator) |
-| `kv_bin.nix` | NKB lookup module (self-contained, no generator) |
+| `kv2.nix` | NFK v2 (compact 22-byte entry) lookup module |
+| `kv3.nix` | NFK v3 (binary hash) lookup module (self-contained, no generator) |
+| `kv_bin.nix` | NKB v1 lookup module (base-255 ASCII index) |
 | `kv_bin2.nix` | NKB v2 (binary index) lookup module (byte table read from file) |
-| `build_db.py` | JSON → NFK v1 builder (`--check` round-trips every key) |
-| `build_db2.py` | JSON → NFK v2 (dense) builder (`--check`, `--m-factor`) |
-| `build_db_bin.py` | JSON → NKB builder (`--check` round-trips every key) |
-| `build_db_bin2.py` | JSON → NKB v2 builder (`--check` round-trips every key) |
-| `gen_data.py` | test data generation (1k / 50k / 200k keys + edge cases) |
-| `gen_kv.py` | emits `kv.nix` (inlines the 100-entry two-digit table to avoid typos) |
-| `gen_kv2.py` | emits `kv2.nix` (inlines the 36-entry base-36 digit table) |
-| `gen_kv_bin.py` | emits `kv_bin.nix` (inlines the 255-entry base-255 pair table) |
-| `test_correctness.nix`, `test_correctness2.nix`, `test_correctness_bin.nix`, `test_correctness_bin2.nix` | Nix-side oracle tests vs `fromJSON` (NFK v1/v2, NKB v1/v2) |
-| `bench.py`, `bench_marginal.py` | benchmark harnesses (parameterized: `--kv/--ext/--label/--out`) |
-| `data/` | `small\|medium\|large.{json,nfd,nfd2,nkb,nkb2}` |
+| `build_db.py` | JSON → NFK v1 builder (`--check` round-trips all keys) |
+| `build_db2.py` | JSON → NFK v2 builder (`--check` round-trips all keys) |
+| `build_db3.py` | JSON → NFK v3 builder (`--check` round-trips all keys) |
+| `build_db_bin.py` | JSON → NKB v1 builder (with independent parser + `--check`) |
+| `build_db_bin2.py` | JSON → NKB v2 builder (with independent parser + `--check`) |
+| `gen_data.py` | Deterministic test KV generator |
+| `gen_kv.py` | Raw byte-table → NFK v1 file (test helper; not used in mainline) |
+| `gen_kv_bin.py` | Raw byte-table → NKB v1 file (test helper; not used in mainline) |
+| `bench.py` / `bench_marginal.py` | Timers (see Benchmark) |
+| `test_correctness*.nix` | Per-format Nix-vs-JSON oracle tests (NFK v1/v2/v3, NKB v1/v2) |
+| `bench*.json` | Raw benchmark output |
+| `data/` | Generated JSON and built `{nfd,nfd2,nfd3,nkb,nkb2}` files |
 
 Usage:
 
@@ -364,11 +441,15 @@ in {
 }
 ```
 NKB v2 (`kv_bin2.nix`, `*.nkb2` files) exposes the identical API.
+NFK v3 (`kv3.nix`, `*.nfd3` files) has the same API as v1/v2 (including
+`tableSize`) and asserts the `NFK3` magic.
 
 ```sh
 python3 build_db.py      input.json out.nfd  --check   # NFK v1
 python3 build_db2.py     input.json out.nfd2 --check   # NFK v2 (dense, m-factor 1.25)
+python3 build_db3.py     input.json out.nfd3 --check   # NFK v3 (binary hash index)
 python3 build_db_bin.py  input.json out.nkb  --check   # NKB
+python3 build_db_bin2.py input.json out.nkb2 --check   # NKB v2 (binary index)
 ```
 
 Builder guarantees: keyLen ≤ 6 digits, valLen ≤ 8 digits, keyOff ≤ 10 digits
@@ -388,6 +469,13 @@ compares — which is what the binary search relies on.
 NKB v2 builder guarantees: key/value < 254³ bytes, each total < 254³, file
 < 254⁴ (raises otherwise); `--check` re-validates the embedded 255-byte
 table and the exact file size; keys sorted in the same byte order as NKB v1.
+
+NFK v3 builder guarantees (`build_db3.py`): N / keyTotal / valTotal and
+each key/value length < 254³ bytes, M and file offsets < 254⁴ (raises
+otherwise); the hash/slot computation is NFK v2's (`fp = int(h[0:6],16)+1`,
+slot `int(h[-8:],16) & (M-1)`); `--check` re-validates the embedded
+255-byte table and the exact file size and re-probes every key with an
+independent open-addressing walk.
 
 Nix-build constraints handled (Nix 2.34.7+1 here):
 
@@ -425,43 +513,56 @@ NKB v2 (`kv_bin2.nix`) additionally relies on:
   *literals* are UTF-8-decoded to U+FFFD; bytes from I/O are not).
 - b254 decoding: one `byte` lookup per digit, Horner-style `dec3`/`dec4`.
 
+NFK v3 (`kv3.nix`) additionally relies on:
+
+- the same file-carried byte table as NKB v2 (255 bytes at offset 64, folded
+  into `{ byte → int }` at import via `foldl'`).
+- b254 decoding: `dec3`/`dec4` — 3–4 one-byte table lookups per field.
+- 24-bit fingerprint decoding: a 6-char hex fold
+  (`int(h[0:6],16)+1`); the value offset is implicit (`keyOff + keyLen`),
+  so the data region is interleaved.
+
 ## Correctness
 
-Method (per format; all four formats run the identical checks):
+Method (per format; all five formats run the identical checks):
 
-1. **Python round-trip** (`build_db.py --check` / `build_db2.py --check` /
-   `build_db_bin.py --check` / `build_db_bin2.py --check`): after building each file, re-parse it
-   independently and check every key via the Python port of the same
-   algorithm (probe for NFK v1/v2, binary search for NKB), plus a
-   known-absent key.
-2. **Nix oracle** (`test_correctness.nix` / `test_correctness2.nix` /
-   `test_correctness_bin.nix` / `test_correctness_bin2.nix`): `fromJSON` is used *only here* as the
-   reference. For every key `k` in the JSON: `db.get k == j."${k}"`; a
-   missing key returns `null`; `db.has` agrees with `?` for present and
-   absent keys; `db.count == length (attrNames j)`.
+1. Python round-trip (`build_db.py --check` / `build_db2.py --check` /
+   `build_db3.py --check` / `build_db_bin.py --check` /
+   `build_db_bin2.py --check`): independent re-parse of the entire file
+   (structure + all keys + all values) compared against the source JSON,
+   followed by a full probe (NFK v1/v2/v3) or binary search (NKB v1/v2)
+   of every key in the file.
+2. Nix oracle (`test_correctness.nix` / `test_correctness2.nix` /
+   `test_correctness3.nix` / `test_correctness_bin.nix` /
+   `test_correctness_bin2.nix`): for every key in the JSON source,
+   compare the db's `get`, `getOr`, and `has` against the JSON source;
+   plus an absent key (expected miss), an empty key (the NFK formats
+   handle it via the fingerprint of the empty hash, NKB v1/v2 via binary
+   search), and a `tableSize` match (NFK formats only).
+3. Miss behavior: `get` of an absent key returns null / `getOr` returns
+   the default; a `has` probe of an absent key returns false.
 
-Results (Nix 2.34.7+1):
-
-| dataset | format | keys | mismatches | miss→null | `has` present/absent | count ok |
-|---|---|---:|---|---|---|---|
+| dataset | format | keys | mismatches | `tableSize` | present/miss checks | empty key |
+|---|---|---:|---:|---|---|---|
 | small | NFK v1 | 1,005 | 0 | ✓ | ✓ / ✓ | ✓ |
-| small | NFK v2 | 1,005 | 0 | ✓ | ✓ / ✓ | ✓ |
-| small | NKB | 1,005 | 0 | ✓ | ✓ / ✓ | ✓ |
 | medium | NFK v1 | 50,000 | 0 | ✓ | ✓ / ✓ | ✓ |
-| medium | NFK v2 | 50,000 | 0 | ✓ | ✓ / ✓ | ✓ |
-| medium | NKB | 50,000 | 0 | ✓ | ✓ / ✓ | ✓ |
 | large | NFK v1 | 200,000 | 0 | ✓ | ✓ / ✓ | ✓ |
+| small | NFK v2 | 1,005 | 0 | ✓ | ✓ / ✓ | ✓ |
+| medium | NFK v2 | 50,000 | 0 | ✓ | ✓ / ✓ | ✓ |
 | large | NFK v2 | 200,000 | 0 | ✓ | ✓ / ✓ | ✓ |
-| large | NKB | 200,000 | 0 | ✓ | ✓ / ✓ | ✓ |
-| small | NKB v2 | 1,005 | 0 | ✓ | ✓ / ✓ | ✓ |
-| medium | NKB v2 | 50,000 | 0 | ✓ | ✓ / ✓ | ✓ |
-| large | NKB v2 | 200,000 | 0 | ✓ | ✓ / ✓ | ✓ |
+| small | NFK v3 | 1,005 | 0 | ✓ | ✓ / ✓ | ✓ |
+| medium | NFK v3 | 50,000 | 0 | ✓ | ✓ / ✓ | ✓ |
+| large | NFK v3 | 200,000 | 0 | ✓ | ✓ / ✓ | ✓ |
+| small | NKB v1 | 1,005 | 0 | n/a | ✓ / ✓ | ✓ |
+| medium | NKB v1 | 50,000 | 0 | n/a | ✓ / ✓ | ✓ |
+| large | NKB v1 | 200,000 | 0 | n/a | ✓ / ✓ | ✓ |
+| small | NKB v2 | 1,005 | 0 | n/a | ✓ / ✓ | ✓ |
+| medium | NKB v2 | 50,000 | 0 | n/a | ✓ / ✓ | ✓ |
+| large | NKB v2 | 200,000 | 0 | n/a | ✓ / ✓ | ✓ |
 
-Edge cases (in `small`): empty key → empty value, 1-char key, unicode key and
-value (multi-byte UTF-8), keys and values containing spaces, and
-`dotted.nested.attr.name`. All four formats pass identically — lookups
-compare and return the UTF-8 bytes directly, so multi-byte characters and
-spaces are handled by construction.
+All five formats pass identically — 1,255,025 lookups across the three
+datasets (every key probed through both the Python checker and the Nix
+oracle), zero mismatches.
 
 ## Benchmark
 
@@ -488,183 +589,201 @@ is one `nix eval`: process start, load data source, look up key(s), exit.
 All benchmark expressions asserted their outputs against the JSON source, so
 every timed run is also a correctness run.
 
-The original report's per-format (two-method) tables — cold lookup, cold
-miss, warm 200, floors, marginal slopes — are superseded by the five-method
-same-session results below; their numbers came from earlier sessions.
+Per-format (two-method) results — cold lookup, cold miss, warm 200, floors,
+marginal slope — and the earlier five-method section are superseded by the
+six-method same-session results below; the older numbers came from earlier
+sessions.
 
-### Five-method results (single session, identical harness)
+### Six-method results (single session, identical harness)
 
-All five methods re-run in one session (benchmarks are only comparable
-within a session); `fromJSON` medians are taken across the four runs
-(per-run spread ≤ 3.4 ms at 200k).
+All six methods re-run in one session (benchmarks are only comparable
+within a session); `fromJSON` medians are taken across the five runs
+(per-run spread ≤ 2.2 ms cold / ≤ 4.0 ms warm at 200k).
 
-**Cold single lookup (median of 15, full `nix eval` wall clock):**
+### Cold single lookup (median of 15 reps)
 
-| dataset | fromJSON `!` | NFK v1 | NFK v2 | NKB v1 | NKB v2 | best vs fromJSON |
-|---|---:|---:|---:|---:|---:|---:|
-| small (1k) | 33.7 ms | 33.7 ms | 34.1 ms | 33.0 ms | 34.2 ms | parity (startup-bound) |
-| medium (50k) | 78.4 ms | 46.5 ms | 42.5 ms | 41.7 ms | **40.0 ms** | NKB v2 (1.96×) |
-| large (200k) | 211.5 ms | 98.0 ms | 79.5 ms | 80.7 ms | **61.6 ms** | NKB v2 (3.43×) |
+| dataset | fromJSON | NFK v1 | NFK v2 | NKB v1 | NKB v2 | NFK v3 | winner |
+|---|---|---|---|---|---|---|---|
+| small (1k) | 33.7 ms | 34.0 ms | 33.8 ms | 33.6 ms | 34.2 ms | 34.3 ms | parity (startup-bound) |
+| medium (50k) | 78.4 ms | 46.3 ms | 41.8 ms | 41.6 ms | 40.4 ms | **39.8 ms** | NFK v3 (1.97×) |
+| large (200k) | 209.8 ms | 98.7 ms | 81.1 ms | 79.8 ms | **60.0 ms** | 60.2 ms | NKB v2 ≈ NFK v3 (3.50× / 3.49×) |
 
-**Cold miss (median of 15):**
+### Cold miss (median of 15 reps)
 
-| dataset | fromJSON `hasAttr` | NFK v1 | NFK v2 | NKB v1 | NKB v2 | best vs fromJSON |
-|---|---:|---:|---:|---:|---:|---:|
-| small | 34.3 ms | 33.1 ms | 33.7 ms | 33.4 ms | 33.1 ms | parity |
-| medium | 77.9 ms | 46.0 ms | 42.2 ms | 42.3 ms | **39.8 ms** | NKB v2 (1.96×) |
-| large | 209.7 ms | 98.2 ms | 79.5 ms | 79.6 ms | **60.9 ms** | NKB v2 (3.44×) |
+| dataset | fromJSON | NFK v1 | NFK v2 | NKB v1 | NKB v2 | NFK v3 | winner |
+|---|---|---|---|---|---|---|---|
+| small (1k) | 33.8 ms | 34.4 ms | 33.5 ms | 33.9 ms | 33.5 ms | 34.5 ms | parity (startup-bound) |
+| medium (50k) | 77.8 ms | 45.6 ms | 43.1 ms | 43.0 ms | 39.6 ms | **39.5 ms** | NFK v3 (1.97×) |
+| large (200k) | 210.5 ms | 97.6 ms | 80.9 ms | 79.7 ms | **60.9 ms** | 61.7 ms | NKB v2 (3.46×) |
 
-**Warm 200 lookups, single eval (median of 3):**
+### Warm 200 lookups per eval (median of 3 reps)
 
-| dataset | fromJSON | NFK v1 | NFK v2 | NKB v1 | NKB v2 | best vs fromJSON |
-|---|---:|---:|---:|---:|---:|---:|
-| small | 34.0 ms | 38.1 ms | 37.3 ms | 43.2 ms | 43.9 ms | fromJSON (startup-bound) |
-| medium | 78.9 ms | 48.7 ms | **46.0 ms** | 55.9 ms | 56.1 ms | NFK v2 (1.71×) |
-| large | 210.7 ms | 99.7 ms | **83.6 ms** | 96.1 ms | 85.8 ms | NFK v2 (2.52×) |
+| dataset | fromJSON | NFK v1 | NFK v2 | NKB v1 | NKB v2 | NFK v3 | winner |
+|---|---|---|---|---|---|---|---|
+| small (1k) | 34.6 ms | 36.5 ms | 36.8 ms | 43.6 ms | 42.6 ms | 38.0 ms | fromJSON (startup-bound) |
+| medium (50k) | 77.5 ms | 51.4 ms | 47.4 ms | 55.2 ms | 54.9 ms | **43.8 ms** | NFK v3 (1.77×) |
+| large (200k) | 208.5 ms | 105.4 ms | 82.1 ms | 97.1 ms | 84.9 ms | **72.0 ms** | NFK v3 (2.90×) |
 
 **Floors (median):**
 
 | floor | small | medium | large |
-|---|---:|---:|---:|
-| `nix eval` startup | ~33–34 ms | ~33–34 ms | ~33–34 ms |
-| `readFile` JSON | 33.1 ms | 39.9 ms | 56.2 ms |
-| `readFile` NFK v1 (.nfd) | 32.0 ms | 46.3 ms | 98.7 ms |
-| `readFile` NFK v2 (.nfd2) | 32.5 ms | 41.2 ms | 77.8 ms |
-| `readFile` NKB v1 (.nkb) | 31.4 ms | 42.2 ms | 81.7 ms |
-| `readFile` NKB v2 (.nkb2) | 33.6 ms | 39.5 ms | 59.5 ms |
-| `fromJSON` + `attrNames` (parse) | 34.3 ms | 86.9 ms | 263.4 ms |
+|---|---|---|---|
+| `nix eval` startup (empty expr) | ~32–36 ms (32.1–35.6 across runs) |
+| `readFile` JSON | 33.4 ms | 38.8 ms | 57.8 ms |
+| `readFile` NFK v1 | 32.8 ms | 45.4 ms | 97.2 ms |
+| `readFile` NFK v2 | 33.0 ms | 42.1 ms | 77.1 ms |
+| `readFile` NKB v1 | 33.9 ms | 41.8 ms | 79.6 ms |
+| `readFile` NKB v2 | 34.0 ms | 40.0 ms | 57.3 ms |
+| `readFile` NFK v3 | 32.5 ms | 39.3 ms | 60.4 ms |
+| `fromJSON` + `attrNames` (parse) | 34.2 ms | 87.8 ms | 259.0 ms |
 
-**Marginal in-process per-lookup, all methods (least-squares slope):**
+### Marginal (in-process) cost per lookup
 
-| dataset | fromJSON | NFK v1 | NFK v2 | NKB v1 | NKB v2 |
-|---|---:|---:|---:|---:|---:|
-| small | ≈ 3 µs (noise) | ≈ 12 µs | ≈ 15 µs | ≈ 40 µs | ≈ 46 µs |
-| medium | ≈ 6–12 µs (noise) | ≈ 17 µs | ≈ 20 µs | ≈ 92 µs | ≈ 89 µs |
-| large | ≈ 0–5 µs (noise) | ≈ −22 µs (noise floor) | ≈ 22 µs | ≈ 92 µs | ≈ 105 µs |
+Least-squares slope of one-eval-time vs number of lookups (10–400 lookups),
+per lookup:
 
-NFK v1's large slope is again at/below the noise floor (−22 µs this run —
-i.e. sub-µs). NFK v2's ~15–22 µs is stable across sessions and datasets;
-its probe runs ~2× longer than v1's (load 0.76 vs 0.38) but each step is
-cheaper (22-byte entry, 8-char fp). NKB v1's slope (~92 µs) is ~10–18
-index-entry decodes (base-255 pair table) plus one key `substring` + compare
-per step. NKB v2's (~105 µs) is the same search with b254 entries (7 one-byte
-table lookups per entry vs 6 pair lookups) — slightly pricier per step, but
-its readFile floor is 22 ms lower at 200k (59.5 vs 81.7 ms), which is what
-makes it the cold-lookup winner.
+| dataset | fromJSON | NFK v1 | NFK v2 | NKB v1 | NKB v2 | NFK v3 |
+|---|---|---|---|---|---|---|
+| small | ≈ 0 µs (noise) | 16.9 µs | 16.3 µs | 45.9 µs | 53.5 µs | **3.5 µs** |
+| medium | ≈ 0 µs (noise) | 14.3 µs | 16.4 µs | 90.5 µs | 63.1 µs | **20.8 µs** |
+| large | ≈ 0–5 µs (noise) | −6.3 µs (noise floor) | **9.9 µs** | 78.6 µs | 96.4 µs | 30.5 µs |
 
-### Head to head (large, 200k)
+NFK v3's slope grows with table size (3.5 → 20.8 → 30.5 µs): expected probe
+count rises with load factor (0.49 → 0.76) and each step decodes a 4-byte
+b254 fingerprint. At 200k it is ~3× NFK v2's 9.9 µs (cheapest stable
+slope) and ~3× cheaper than NKB v2's 96.4 µs. NFK v1's large slope is again
+at/below the noise floor (−6.3 µs this run; `fromJSON`'s large slope is
+equally noisy); its real per-lookup is ~14–17 µs. The binary search's step
+cost, not the file, is what keeps NKB v2's floor (57.3 ms) the lowest of all.
 
-| workload | NFK v1 | NFK v2 | NKB v1 | NKB v2 | winner |
-|---|---:|---:|---:|---:|---|
-| Cold single lookup | 98.0 ms | 79.5 ms | 80.7 ms | **61.6 ms** | NKB v2 (1.29×) |
-| Cold miss | 98.2 ms | 79.5 ms | 79.6 ms | **60.9 ms** | NKB v2 (1.30×) |
-| Warm 200 lookups | 99.7 ms | **83.6 ms** | 96.1 ms | 85.8 ms | NFK v2 (1.03× over NKB v2) |
-| File size | 33.3 MB | 18.1 MB | 17.1 MB | **15.1 MB** | NKB v2 (1.13× smaller than NKB v1) |
-| readFile floor | 98.7 ms | 77.8 ms | 81.7 ms | **59.5 ms** | NKB v2 (−18.3 ms vs NFK v2) |
-| Marginal per-lookup | ~0–17 µs | ~15–22 µs | ~40–92 µs | ~46–105 µs | NFK v2 |
+### Head-to-head at large (200k keys, ms)
 
-Where the numbers come from: NKB v2's cold edge is exactly its readFile
-advantage (59.5 vs 77.8/81.7 ms floor) — the binary index made the file
-11.7% smaller than NKB v1 and the floor dropped 22 ms with it. NFK v2's
-warm win is its per-lookup speed: ~22 µs vs ~105 µs saves ~16.6 ms over
-200 lookups — just enough to beat NKB v2's 18.3 ms floor advantage by a
-2.2 ms margin (83.6 vs 85.8; the crossover sits at ~220 lookups/eval).
-NKB v1 is now dominated by NKB v2 on every workload; NFK v1's 33.3 MB file
-keeps its floor 19–40 ms above the rest, which it can't buy back at this
-session's per-lookup rates.
+| workload | NFK v1 | NFK v2 | NKB v1 | NKB v2 | NFK v3 | winner |
+|---|---:|---:|---:|---:|---:|---|
+| cold single lookup | 98.7 | 81.1 | 79.8 | **60.0** | 60.2 | NKB v2 (1.33× over NKB v1) |
+| cold miss | 97.6 | 80.9 | 79.7 | **60.9** | 61.7 | NKB v2 (1.31× over NKB v1) |
+| warm 200 lookups | 105.4 | 82.1 | 97.1 | 84.9 | **72.0** | NFK v3 (1.14× over NFK v2) |
+| file size (MB) | 33.3 | 18.1 | 17.1 | **15.1** | 16.3 | NKB v2 (7% smaller than NFK v3) |
+| readFile floor | 97.2 | 77.1 | 79.6 | **57.3** | 60.4 | NKB v2 (−3.1 ms over NFK v3) |
+| marginal per-lookup | ~0–17 µs (noise) | 9.9 µs | 78.6 µs | 96.4 µs | 30.5 µs | NFK v2 |
+
+NFK v3 is the union of the two v2-line strengths: within 3.1 ms of NKB v2's
+floor with a file only 7% larger, but with NFK-class per-lookup cost. NKB
+v2's cold win has narrowed to a 0.2 ms coin-flip (60.0 vs 60.2); its
+remaining edges are file size (−1.13 MB) and floor (−3.1 ms), which decide
+below ≈ 47 lookups/eval. NFK v3's warm win over NFK v2 (72.0 vs 82.1) comes
+from the 16.7 ms floor gap outweighing the 20.6 µs/lookup slope gap up to
+≈ 810 lookups/eval.
 
 ### Analysis
 
-Cost model, verified against the floors:
+Cost model per `nix eval` doing n lookups on the 200k table:
 
-```
-fromJSON(n)  ≈ 34 + read(JSON)  + parse(JSON) + sub-µs·n
-NFK v1(n)    ≈ 34 + read(.nfd)  + import + ~(0–17 µs)·n
-NFK v2(n)    ≈ 34 + read(.nfd2) + import + ~(15–22 µs)·n
-NKB v1(n)    ≈ 34 + read(.nkb)  + import + ~(40–92 µs)·n
-NKB v2(n)    ≈ 34 + read(.nkb2) + import + ~(46–105 µs)·n
-```
+    fromJSON(n) ≈ 33 + read(JSON) + parse(JSON) + sub-µs·n
+    NFK v1(n)   ≈ 33 + read(.nfd)  + import + ~(0–17 µs)·n
+    NFK v2(n)   ≈ 33 + read(.nfd2) + import + ~(10–16 µs)·n
+    NKB v1(n)   ≈ 33 + read(.nkb)  + import + ~(46–91 µs)·n
+    NKB v2(n)   ≈ 33 + read(.nkb2) + import + ~(54–96 µs)·n
+    NFK v3(n)   ≈ 33 + read(.nfd3) + import + ~(4–31 µs)·n
 
-At large: parse ≈ 207 ms (263.4 − 56.2) vs readFile floors of 98.7 / 77.8 /
-81.7 / 59.5 ms for the four custom formats; all custom formats buy back the
-parse with a per-lookup tax.
+At large, `parse(JSON)` ≈ 201 ms (259.0 − 57.8), vs the readFile floors of
+97.2 / 77.1 / 79.6 / 57.3 / 60.4 ms — the parse is the whole story for cold
+evals.
 
-Crossover with `fromJSON` (equal total time; load edge ÷ per-lookup tax):
+Crossover with fromJSON (where the custom format's higher floor + slope
+catches fromJSON's lower floor + steeper effective slope):
 
-| dataset | NFK v1 | NFK v2 | NKB v1 | NKB v2 |
-|---|---:|---:|---:|---:|
-| small | ≈ tie (startup-bound) | ≈ tie (startup-bound) | ≈ tie (startup-bound) | ≈ tie (startup-bound) |
-| medium | ≈ 1,700 lookups/eval | ≈ 1,700 lookups/eval | ≈ 430 lookups/eval | ≈ 410 lookups/eval |
-| large | slope-noisy (≤0 this run) | ≈ 6,000 lookups/eval | ≈ 1,500 lookups/eval | ≈ 1,400 lookups/eval |
+| dataset | NFK v1 | NFK v2 | NKB v1 | NKB v2 | NFK v3 |
+|---|---|---|---|---|---|
+| small | ≈ parity (startup-bound) | ≈ parity | ≈ parity | ≈ parity | ≈ parity |
+| medium | ≈ 2,200 | ≈ 2,100 | ≈ 410 | ≈ 600 | ≈ 1,800 |
+| large | slope-noisy (≤0 this run) | ≈ 12,400 | ≈ 1,600 | ≈ 1,500 | ≈ 4,700 |
 
-Crossover **between the custom formats** (large; floor gap ÷ per-lookup gap):
+Crossover between custom formats (large, 200k):
 
-- **NKB v2 vs NFK v2**: 18.3 ms ÷ (105 − 22) µs ≈ 220 lookups/eval — NKB
-  v2 below it, NFK v2 above; at 200 lookups they are within 2.2 ms
-  (85.8 vs 83.6).
-- **NKB v2 vs NKB v1**: 22.2 ms ÷ (105 − 92) µs ≈ 1,700 lookups/eval —
-  NKB v2 wins below that; at 200 lookups by 10.3 ms (85.8 vs 96.1).
-- **NFK v2 vs NFK v1**: v1's slope is at the noise floor this run, but v2's
-  floor is 26.5 ms lower (load 75.3 vs 101.8 ms) and its per-lookup cost is
-  at most ~22 µs — v2 dominates v1 at 50k+ entries.
-- **NKB v2 vs NFK v1**: 44.8 ms ÷ (105 − ~0) µs ≈ 400 lookups/eval.
+- **NFK v3 vs NKB v2**: 3.1 ms ÷ (96.4 − 30.5) µs ≈ **47 lookups/eval** —
+  NKB v2 below (its 3.1 ms floor edge), NFK v3 above; at 200 lookups NFK v3
+  wins by 12.9 ms (72.0 vs 84.9).
+- **NFK v3 vs NFK v2**: 16.7 ms ÷ (30.5 − 9.9) µs ≈ **810 lookups/eval** —
+  NFK v3 below, NFK v2 above (its 9.9 µs is the cheapest stable slope).
+- **NKB v2 vs NFK v2**: 19.8 ms ÷ (96.4 − 9.9) µs ≈ 230 lookups/eval.
+- **NKB v2 vs NKB v1**: 22.3 ms ÷ (96.4 − 78.6) µs ≈ 1,250 lookups/eval —
+  NKB v1 only wins above ~1,250 lookups/eval; NKB v1 is dominated.
+- **NKB v2 vs NFK v1**: 39.9 ms ÷ (96.4 − ~0) µs ≈ 410 lookups/eval.
 
-- **Below the `fromJSON` crossovers** (one to a few hundred lookups per
-  eval — the common case for Nix tooling, since each `nix eval`/`nix build`
-  re-evaluates from scratch) **all custom formats win over `fromJSON`**,
-  and the win grows with table size.
-- **NKB v2 is the default choice for cold single/few-lookup evals at 50k+
-  entries**: smallest file of all (15.1 MB, 1.09× JSON), lowest readFile
-  floor (59.5 ms), fastest cold lookups (61.6 ms at 200k — 3.4× vs
-  fromJSON), still zero hashing with the deterministic worst case.
-- **NFK v2 is the choice when one eval does hundreds of lookups**: its
-  ~22 µs/lookup beats NKB v2's ~105 µs/lookup above ~220 lookups/eval
-  (83.6 ms warm-200 at 200k vs NKB v2 85.8 and NKB v1 96.1).
-- **NKB v1 and NFK v1 are kept for reference**: NKB v1 for the diffable
-  ASCII index (superseded on every workload by NKB v2), NFK v1 to show the
-  density headroom its successors exploit.
-- **Above the `fromJSON` crossover** (bulk in-process scans) `fromJSON`'s
-  sub-µs attrset access wins per-lookup, since its parse was paid once.
+Verdict from the numbers:
+
+- Every custom format beats `fromJSON` up to its crossover (≈ 410
+  lookups/eval for NKB v1 at medium to ≈ 12,400 for NFK v2 at large) — i.e.
+  for essentially all realistic single-eval workloads.
+- **NFK v3 is the overall champion for typical workloads (few to a few
+  hundred lookups/eval) at 50k+ entries**: fastest warm-200 at medium and
+  large (43.8 / 72.0 ms), wins cold at medium (39.8), and ties the fastest
+  cold at large within 0.2 ms (60.2 vs 60.0).
+- **NKB v2 is the smallest-file / few-lookup choice**: smallest file of all
+  (15.1 MB, 1.09× JSON), lowest floor (57.3 ms); it stays ahead of NFK v3
+  below ≈ 47 lookups/eval at 200k keys and wins cold large by 0.2 ms.
+- **NFK v2 is the 800+-lookups/eval specialist**: its 9.9 µs/lookup beats
+  NFK v3's 30.5 µs above ≈ 810 lookups despite the 16.7 ms higher floor.
+- NKB v1 and NFK v1 are retained for reference (diffable ASCII index; the
+  density baseline).
+- Above the fromJSON crossover (bulk in-process scan), `fromJSON`'s sub-µs
+  attrset access wins per-lookup.
 - File sizes vs JSON (13.9 MB at large): NFK v1 2.40×, NFK v2 1.30×,
-  NKB v1 1.23×, NKB v2 1.09×. NKB v2's binary index is the smallest file
-  of all — possible because the 255-byte decode table is carried by the
-  file itself (built at import) rather than written in `.nix` source; the
-  price is diffability of the index region (data region unchanged).
+  NKB v1 1.23×, NFK v3 1.17×, NKB v2 1.09×. NFK v3 shows a hash index can
+  sit within 7% of the smallest file of all while keeping O(1) probing.
 
-## Trade-offs, stated plainly
+## Trade-offs (summary)
 
-1. **Per-lookup, warm, in-process: `fromJSON` is fastest** (sub-µs
-   attrset), then NFK v1 (~0–17 µs), NFK v2 (~15–22 µs), NKB v1
-   (~40–92 µs), NKB v2 (~46–105 µs). No custom format beats scanning an
-   entire table in one eval.
-2. **Cold / repeated invocations: all custom formats beat `fromJSON`** by
-   1.96–3.44× at 50k–200k entries (NKB v2 3.43× cold at 200k); at ~1k
-   entries all five tie at startup cost.
-3. **File size:** NFK v2 exists precisely because NFK v1's index was
-   63% of its file (40 B × M at load ≤ 0.5). v2's 22-byte entries at
-   load ≤ 0.8 put the large file at 18.1 MB = 1.30× JSON (index 32%);
-   NKB v1 is 1.23× JSON (index 28%); NKB v2's 14-byte binary entries put
-   it at 15.1 MB = 1.09× JSON (index 18.5%).
-4. **NKB v1/v2 has no hashing at all** — literally `readFile` +
-   `substring` + arithmetic; NFK v1/v2 pay one sha256 per lookup. NFK v2's
-   32-bit fingerprint means ~5 false fp matches expected at 200k — each
-   costs one extra key compare, never a wrong answer.
-5. **Static only.** Updates require re-running the builder (by design).
-6. **No `builtins.parseInt`/`%`/`mod`** on this Nix: v1's decimal decoding
-   costs a small fold per field; v2's base-36 decode costs 4–6 table
-   lookups per field; NKB v1's base-255 decode costs 2–4 per field; NKB
-   v2's b254 decode costs 3–4 one-byte table lookups per field. A Nix
-   with `parseInt` would shave a few µs per lookup from all four.
-7. **Memory:** the whole file string is held in the evaluator (same as
-   `readFile` JSON); the `fromJSON` variant additionally holds a 200k-key
-   attrset.
+1. **Per-lookup warm in-process**: `fromJSON` is fastest (sub-µs attrset
+   lookup after load); NFK v2 ≈ 10–16 µs/lookup (hash + dense-table probe);
+   NFK v3 ≈ 4–31 µs (hash + binary-decoded probe, slope grows with table
+   size); NFK v1 ≈ 0–17 µs (noise-limited at 200k); NKB v1 ≈ 46–91 µs;
+   NKB v2 ≈ 54–96 µs (≤ 18 binary-search steps of byte-slice decoding).
+   None of the custom formats can beat scanning a large fraction of the
+   table in one evaluation — the crossover table above quantifies that.
+2. **Cold / repeated invocations**: every custom format beats `fromJSON`
+   up to its crossover, which ranges from a few lookups (small,
+   startup-bound) to ≈ 4,700 (NFK v3, large) and ≈ 12,400 (NFK v2, large).
+   At 50k–200k entries the custom formats take 39.8–105.4 ms
+   (NFK v3 / NFK v1 bounds) vs ~209 ms for `fromJSON`; at ~1k entries all
+   six tie at startup cost (33–35 ms).
+3. **File size**: NFK v1 ≈ 2.4× the equivalent JSON (index is 63% of the
+   file); NFK v2's 22-byte base-36 entries bring it to 18.1 MB = 1.30× (index
+   32%); NKB v1's base-255 entries 17.1 MB = 1.23× (index 28%); NFK v3's
+   15-byte binary entries 16.3 MB = 1.17× (index 24%); NKB v2's binary
+   index 15.1 MB = 1.09× (index 18.5%).
+4. **Hashing**: NKB v1/v2 have none; NFK v1/v2/v3 pay one `sha256` per
+   lookup. Fingerprint sizes: v1 64-bit, v2 32-bit (~5 false fp matches
+   expected at 200k), v3 24-bit (~2,400 expected at 200k, ≈0.012 per
+   lookup). A false match costs one extra key read + compare — it can
+   never produce a wrong value.
+5. **Static only**: the database is precomputed and immutable at build
+   time; adding keys requires re-running the builder (the file is a
+   snapshot; there is no in-eval mutation).
+6. **No `parseInt` / no `%` / no mod on this Nix**: v1's decimal decode
+   is a small fold per field; v2's base-36 decode is 4–6 table lookups per
+   field; NKB v1's base-255 decode is 2–4 table lookups per field; NKB v2's
+   and NFK v3's b254 decodes are 3–4 one-byte table lookups per field
+   (NFK v3 additionally pays a 6-char hex fold for the 24-bit fingerprint).
+7. **Memory**: each lookup is a constant number of heap strings
+   (fingerprint/key/value fragments); no table is materialised in Nix
+   memory at import.
 
-**Use NKB v2** as the default for 50k+ key tables: smallest file, fastest
-cold lookups, zero hashing. **Use NFK v2** when a single evaluation does
-hundreds of lookups (its ~22 µs/lookup beats NKB v2's ~105 µs/lookup).
-**Use `fromJSON`** when one evaluation touches a large fraction of the
-table, or when simplicity and tooling around JSON outweigh a hundred or two
-milliseconds.
+**Verdict.** **Use NFK v3** as the default for 50k+ entry tables: it is the
+fastest multi-lookup format (72.0 ms warm-200 at 200k, 2.9× over fromJSON
+and 14% over NFK v2), a cold near-tie with NKB v2 (60.2 vs 60.0; NFK v3
+actually wins cold at 50k, 39.8 vs 40.4), its file is 1.17× JSON, and hash
+probing keeps the worst case deterministic. **Use NKB v2** when the
+smallest file or a few-lookup cold eval matters: smallest file of all
+(15.1 MB, 1.09× JSON), lowest floor (57.3 ms), zero hashing — it stays
+ahead of NFK v3 below ≈ 47 lookups/eval at 200k keys. **Use NFK v2** when a
+single evaluation does 800+ lookups: its 9.9 µs/lookup (cheapest stable
+slope) beats NFK v3's 30.5 µs above ≈ 810 lookups despite the 16.7 ms
+higher floor. **Use `fromJSON`** when one evaluation touches a large
+fraction of the table (bulk in-process scan), or when JSON's simplicity and
+tooling outweigh a hundred-plus milliseconds of parse time. NKB v1 and NFK
+v1 are retained for reference (diffable ASCII index; the density baseline).
 
 ## Reproducing
 
@@ -673,11 +792,13 @@ python3 gen_data.py                              # data/{small,medium,large}.jso
 for s in small medium large; do
   python3 build_db.py      data/$s.json data/$s.nfd  --check   # NFK v1
   python3 build_db2.py     data/$s.json data/$s.nfd2 --check   # NFK v2
+  python3 build_db3.py     data/$s.json data/$s.nfd3 --check   # NFK v3
   python3 build_db_bin.py  data/$s.json data/$s.nkb  --check   # NKB
   python3 build_db_bin2.py data/$s.json data/$s.nkb2 --check   # NKB v2
 done
 nix eval --impure --expr '(import ./test_correctness.nix) "large"'
 nix eval --impure --expr '(import ./test_correctness2.nix) "large"'
+nix eval --impure --expr '(import ./test_correctness3.nix) "large"'
 nix eval --impure --expr '(import ./test_correctness_bin.nix) "large"'
 nix eval --impure --expr '(import ./test_correctness_bin2.nix) "large"'
 python3 bench.py                                 # NFK v1 cold+warm+floors -> bench_results.json
@@ -686,17 +807,21 @@ python3 bench.py --kv ./kv2.nix --ext nfd2 --label nfk2 \
     --out bench_nfk2_results.json                # NFK v2, same harness
 python3 bench_marginal.py --kv ./kv2.nix --ext nfd2 --label nfk2 \
     --out bench_marginal_nfk2.json
+python3 bench.py --kv ./kv3.nix --ext nfd3 --label nfk3 \
+    --out bench_nfk3_results.json                # NFK v3, same harness
+python3 bench_marginal.py --kv ./kv3.nix --ext nfd3 --label nfk3 \
+    --out bench_marginal_nfk3.json
 python3 bench.py --kv ./kv_bin.nix --ext nkb --label nkb \
     --out bench_nkb_results.json                 # NKB, same harness
 python3 bench_marginal.py --kv ./kv_bin.nix --ext nkb --label nkb \
     --out bench_marginal_nkb.json
 python3 bench.py --kv ./kv_bin2.nix --ext nkb2 --label nkb2 \
-    --out bench_nkb2_results.json            # NKB v2, same harness
+    --out bench_nkb2_results.json                # NKB v2, same harness
 python3 bench_marginal.py --kv ./kv_bin2.nix --ext nkb2 --label nkb2 \
     --out bench_marginal_nkb2.json
 ```
 
-Example lookups (same key, all four formats — same value):
+Example lookups (same key, all five formats — same value):
 
 ```sh
 nix eval --impure --raw --expr \
@@ -705,7 +830,11 @@ nix eval --impure --raw --expr \
 
 nix eval --impure --raw --expr \
   '((import ./kv2.nix) ./data/large.nfd2).get "pkgs484.env795.nix877.pkgs793"'
-# -> chde4cf665ukuewyy-tx        (NFK v2, ~80 ms)
+# -> chde4cf665ukuewyy-tx        (NFK v2, ~81 ms)
+
+nix eval --impure --raw --expr \
+  '((import ./kv3.nix) ./data/large.nfd3).get "pkgs484.env795.nix877.pkgs793"'
+# -> chde4cf665ukuewyy-tx        (NFK v3, ~60 ms)
 
 nix eval --impure --raw --expr \
   '((import ./kv_bin.nix) ./data/large.nkb).get "pkgs484.env795.nix877.pkgs793"'
@@ -713,5 +842,5 @@ nix eval --impure --raw --expr \
 
 nix eval --impure --raw --expr \
   '((import ./kv_bin2.nix) ./data/large.nkb2).get "pkgs484.env795.nix877.pkgs793"'
-# -> chde4cf665ukuewyy-tx        (NKB v2, ~61 ms)
+# -> chde4cf665ukuewyy-tx        (NKB v2, ~60 ms)
 ```
