@@ -4,10 +4,13 @@
 
 Workload: one cold `nix eval --impure --raw` process answers N queries of
 "which revisions shipped this package?" (N attribute lookups; N=0 = load
-only). Two methods compared:
+only). Three methods compared:
 
   fromJSON : builtins.fromJSON over the whole 5.3/7.5 MiB index file
   nfk3     : our NFK3 table (kv3.nix getJson) — per-attr compact JSON
+  nfk3s    : sharded NFK3 (kv3s.nix, 256 shard files) — per-attr compact
+             JSON, only the key's shard file is read (n=0 not applicable:
+             there is no whole-file load; n=1 is the intercept point)
 
 Queries: "hello" + 199 strided samples of the sorted attr names, per file.
 
@@ -23,6 +26,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARENT = os.path.dirname(HERE)
 KV3 = os.path.join(PARENT, "kv3.nix")
+KV3S = os.path.join(PARENT, "kv3s.nix")
 NQS = 200
 NS = [0, 1, 5, 10, 30, 100, 200]
 
@@ -63,6 +67,15 @@ def expr_nfkc3(t, qs):
             % (json.dumps(KV3), json.dumps(t), qlit(qs)))
 
 
+def expr_nfkc3s(d, qs):
+    """Sharded NFK3: only the shard a key hashes to is read."""
+    if not qs:
+        return None  # no whole-file load point; n=1 is the intercept
+    return ("let db = import %s { digits = 2; dir = %s; }; qs = %s; "
+            "in builtins.toJSON (builtins.map (a: db.getJson a) qs)"
+            % (json.dumps(KV3S), json.dumps(d), qlit(qs)))
+
+
 def run_eval(expr, timeout=120):
     t0 = time.monotonic()
     p = subprocess.run(["nix", "eval", "--impure", "--raw", "--expr", expr],
@@ -78,20 +91,24 @@ def main():
     files = [
         ("versions", os.path.join(HERE, "index/versions.json"),
          os.path.join(HERE, "versions.nfd3"),
-         os.path.join(HERE, "versions_flat.json")),
+         os.path.join(HERE, "versions_flat.json"),
+         os.path.join(HERE, "versions_shards")),
         ("history", os.path.join(HERE, "index/history.json"),
          os.path.join(HERE, "history.nfd3"),
-         os.path.join(HERE, "history_flat.json")),
+         os.path.join(HERE, "history_flat.json"),
+         os.path.join(HERE, "history_shards")),
     ]
     out = {"runs_per_config": runs, "n_queries": NS,
            "note": "cold process per eval; ms = wall time of nix eval",
            "configs": {}}
-    for name, j, t, flat in files:
+    for name, j, t, flat, sd in files:
         qs = queries_for(flat)
         for n in NS:
             cfg = f"{name}/n={n}"
             exprs = {"fromJSON": expr_fromjson(j, qs[:n]),
                      "nfk3": expr_nfkc3(t, qs[:n])}
+            if n > 0:
+                exprs["nfk3s"] = expr_nfkc3s(sd, qs[:n])
             res = {}
             for m, e in exprs.items():
                 dts = []
@@ -105,6 +122,12 @@ def main():
                           "ms_median": round(statistics.median(dts), 1),
                           "ms_all": [round(x, 1) for x in dts],
                           "out_bytes": outlen}
+            # harness invariant: every method answers the same queries
+            # (n=0 is a load-only point with different output by design)
+            if n > 0:
+                lens = {m: res[m]["out_bytes"] for m in res}
+                assert len(set(lens.values())) == 1, \
+                    f"{cfg}: outputs differ: {lens}"
             out["configs"][cfg] = res
             print(cfg + ": " + "  ".join(
                 f"{m} min={res[m]['ms_min']} med={res[m]['ms_median']}"

@@ -7,7 +7,11 @@
 # machinery: each numeric field is 3-4 "b254" bytes (one byte per digit,
 # byte = digit + 1, big-endian) and the byte->int decode table is carried
 # in the file itself (255 bytes 0x01..0xFF at offset 64), folded into an
-# attrset at import time. No high byte ever appears in .nix source.
+# attrset at import time unless the caller supplies it. No high byte ever
+# appears in .nix source.
+# `db` is a path or string, or { file, table } for callers that share one
+# prebuilt char->int decode table across many imports (kv3s.nix does this:
+# every file carries the identical table bytes at offset 64).
 #
 # Layout (chars == bytes):
 #   0..3    magic "NFK3"
@@ -46,16 +50,24 @@ let
 in
 db:
   let
-    raw = builtins.readFile db;
+    # db is a path or string, or { file, table }: the attrset form lets a
+    # caller share one prebuilt char->int decode table across many
+    # imports — kv3s.nix builds it once per eval, since every NFK v3 file
+    # carries the identical 255 table bytes at offset 64.
+    direct = builtins.isString db || builtins.isPath db;
+    f = if direct then db else db.file;
+    raw = builtins.readFile f;
 
     # Byte table carried in the file: T[i] is the byte whose value is i+1.
     # Built into an attrset once at import; no high byte ever appears in
     # .nix source.
     T = builtins.substring H 255 raw;
     table =
-      builtins.foldl' (t: i: t // { "${builtins.substring i 1 T}" = i; })
-      {}
-      (builtins.genList (i: i) 255);
+      if direct
+      then builtins.foldl' (t: i: t // { "${builtins.substring i 1 T}" = i; })
+           {}
+           (builtins.genList (i: i) 255)
+      else db.table;
 
     # 1 byte at absolute position p -> int value (0..253)
     byte = p: table."${builtins.substring p 1 raw}";

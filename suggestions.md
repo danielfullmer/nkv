@@ -1,9 +1,18 @@
 # NFK3 improvement suggestions
 
-2026-08-20. Grounded in `kv3.nix` (tag #1649), `build_db3.py`, and the measured
+2026-08-20. Grounded in `kv3.nix`, `kv3s.nix`, `build_db3.py`, and the measured
 benchmarks (parent six-method session, 200k `large` dataset; and the
 `multiverse-faster/` 31,904-key workload, Nix 2.34.7). Nothing here is a
 correctness fix — NFK v3 is sound; these are performance and robustness.
+
+**Status (updated 2026-08-20):** Tier 1 (sharding) is implemented —
+`build_db3.py --shards/--prefix` + `kv3s.nix`; measured results at the end of
+the Tier 1 section. Follow-up (same day): the per-shard fixed cost is now the
+readFile + header asserts (~0.2 ms) — `kv3s.nix` builds the 255-byte decode
+table **once per eval** and shares it into every shard import via `kv3.nix`'s
+new `{ file, table }` call form (before, each shard import rebuilt the table
+in a 255×`//` fold, ~0.8 ms/shard), moving the sharded-vs-single crossover
+from ~10–30 to ~100–200 lookups/eval.
 
 ## Where the cost is (measured)
 
@@ -26,7 +35,7 @@ A single lookup is ~50 interpreter operations:
 Two levers: the **intercept** (dominated by `readFile` of the whole file) and
 the **marginal** (interpreter op count per lookup).
 
-## Tier 1 — shard the file (biggest absolute win)
+## Tier 1 — shard the file (biggest absolute win) — **implemented**
 
 `builtins.readFile` is all-or-nothing, so every eval pays ~10–24 ms copying
 5.7/16.3 MB even for one lookup. Split the table by a second digest slice
@@ -46,6 +55,39 @@ key by its own digest slice), and a ~20-line `kv3s.nix` wrapper that picks the
 shard and delegates to `kv3.nix`. You lose the single-file property — that is
 the trade. (This is the same gap the fkzakaria article's wasm section fights:
 Nix has no partial-read builtin.)
+
+**Implemented** (2026-08-20): `build_db3.py --shards {16,256,4096} --prefix
+DIR/` writes `DIR/<h[24:24+d]>.nfd3` for every shard (empty shard = valid NFK
+v3 file, N = 0, M = 16); `kv3s.nix` selects the shard by
+`sha256(key) hex [24:24+d]` and delegates to `kv3.nix` (same API; lazy — no
+shard file is read until a lookup is forced). Measured (multiverse, 256
+shards, median of 3 cold `nix eval`s, `multiverse-faster/bench.py`; final run
+after the shared-table fix below):
+
+| n lookups/eval | fromJSON | nfk3 (single file) | nfk3s (256 shards) |
+|---:|---:|---:|---:|
+| 1 | 152.6 ms | 43.2 ms | **33.9 ms** |
+| 5 | 157.6 ms | 42.2 ms | 35.6 ms |
+| 10 | 153.2 ms | 43.4 ms | 35.8 ms |
+| 30 | 158.6 ms | 43.8 ms | **35.7 ms** |
+| 100 | 156.9 ms | 47.8 ms | **43.4 ms** |
+| 200 | 157.5 ms | 45.3 ms | 53.0 ms |
+
+The single-lookup intercept drops 43.2 → 33.9 ms (≈ the ~32–35 ms eval
+startup floor); `history` shows the same shape (48.3 → 34.6 ms). The first
+`kv3s.nix` paid ~0.8 ms per distinct shard — dominated by the 255×`//`
+decode-table fold (O(n²) attrset copies) that every shard import re-ran.
+Since every NFK v3 file carries the identical 255-byte table at offset 64,
+`kv3s.nix` now builds it **once per eval** (sourcing the bytes from the
+all-zero shard, always present) and shares it into every shard import via
+`kv3.nix`'s new `{ file, table }` call form — a shard import is now just
+readFile + header asserts (~0.2 ms measured; 8-shard microbench: 0.82 →
+0.18 ms/shard). The crossover moved right accordingly: sharded wins through
+N=100 (43.4 vs 47.8 ms single-file) and single-file is marginally ahead from
+N=200 (53.0 vs 45.3 ms); `history` crossovers at the same point (43.7/49.5
+at N=100, 55.0/52.7 at N=200). Measured 33.9 ms beat the predicted ~37 ms
+because the shard read (15–30 KB) fits almost inside the Nix eval floor on
+this machine.
 
 ## Tier 2 — v4 slot: store the fingerprint as raw hex (W 15 → 16)
 
@@ -98,9 +140,11 @@ confirm.
   bit rot.
 - **API**: `getMany` (map `get` over a key list), `keys` (O(M) slot walk —
   for debugging / nix-side checks), `load` (n/m float, diagnostics).
-- **Byte-table build** at import (kv3.nix:55–58) is a 255×`//` fold —
-  O(n²) ≈ 33k attrset copies, <1 ms one-off. Replace with a
-  split-and-merge (O(n log n)); free win.
+- **Byte-table build** at import (kv3.nix) is a 255×`//` fold —
+  O(n²) ≈ 33k attrset copies, ~0.7 ms. For the sharded path this is now
+  paid **once per eval** (`kv3s.nix` shares the table into all shard
+  imports via the `{ file, table }` form); single-file imports still pay it
+  per import — replace with a split-and-merge (O(n log n)) as a free win.
 
 ## Considered and rejected
 
@@ -130,12 +174,12 @@ exactly those 30 keys** (M=64, ~10 KB): the whole lock answers in ~35 ms vs
 `multiverse-faster/`). `build_db3.py` already accepts arbitrary JSON input —
 no new code.
 
-## Priority
+## Priority (updated 2026-08-20: Tier 1 implemented)
 
 1. **Tier 2 (v4 hex fp)** — self-contained format change with a clean
    correctness story; pays on every lookup of every table.
-2. **Tier 1 (sharding)** — if the multiverse-style workload (many small
-   files' worth of lookups, low N per eval) matters more than the 200k
-   single-file one.
-3. **Tier 3** — rides along with Tier 2 (same hex-decoding site).
-4. Hardening items — do whenever the builder is touched.
+2. **Tier 3** — rides along with Tier 2 (same hex-decoding site).
+3. Hardening items — do whenever the builder is touched.
+4. ~~Tier 1 (sharding)~~ — **implemented**: `build_db3.py --shards` +
+   `kv3s.nix` (shared decode table, 2026-08-20). Use for ≲ ~100
+   lookups/eval; single-file NFK v3 is marginally faster beyond ~200.

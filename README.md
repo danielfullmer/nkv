@@ -214,6 +214,20 @@ Invariants:
 - Sizes (200k keys): 16,273,835 bytes = 1.17× the JSON (vs 18.1 MB / 1.30× for NFK v2, 15.1 MB / 1.09× for NKB v2).
 - Values are opaque: any UTF-8 minus NUL may be stored. When a value holds a JSON document, `getJson`/`getOrJson` decode it with `builtins.fromJSON` at lookup time — the file format is unchanged (byte-identical to str mode).
 
+### Optional file sharding
+
+For very large tables, or for evals that do only a few lookups, `build_db3.py` can split the table into a directory of independent NFK v3 files, one per slice of the key hash:
+
+```sh
+python3 build_db3.py INPUT.json --shards 256 --prefix sharded/ --check
+```
+
+- Shard of key `k` = `sharded/<h[24:24+d]>.nfd3`, where `h` is the lowercase hex of `sha256(k)` and `d` is the number of digits: `--shards 16/256/4096` → `d = 1/2/3`.
+- **Every shard file is always written** — an empty shard is a valid NFK v3 file with `N = 0`, `M = 16` — so a key always resolves to an existing file.
+- The slice `[24:24+d)` is disjoint from the fingerprint slice `[0:6)` and the probe-seed slice `[56:64)` the probing algorithm uses, so sharding does not perturb probe distribution; each shard is a standalone NFK v3 table with its own `M`.
+- Reader: `kv3s.nix` (see Usage) — per lookup only the shard the key hashes to is read; Nix's import cache keeps it for the rest of the eval. Every NFK v3 file carries the identical 255-byte decode table at offset 64, so `kv3s.nix` builds it **once per eval** (sourcing the bytes from the all-zero shard, which the builder always writes) and passes it into each shard import via `kv3.nix`'s `{ file, table }` call form — a shard import then costs only the readFile + header asserts (~0.2 ms measured). `kv3.nix`'s `db` argument also accepts a plain path (string or path value), in which case it folds the table itself.
+- `--check` in sharded mode re-derives shard membership from the input keys and re-probes every key through the shard files.
+
 ## Lookup algorithm (NKB)
 
 ```
@@ -278,6 +292,15 @@ in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.count; db.tableSize }
 ```
 Values are opaque; when a value holds a JSON document, `db.getJson "k"` / `db.getOrJson "k" default` return `builtins.fromJSON` of the stored string (a miss still returns `null`).
 
+Sharded NFK v3 (`kv3s.nix`) takes a directory built with `--shards` (`digits` must match the shard count) and the same API:
+
+```nix
+let db = import ./kv3s.nix { digits = 2; dir = ./sharded; };
+in { db.get "k"; db.getOr "k" "d"; db.has "k"; db.getJson "k"; db.count }
+```
+
+Importing the module is lazy — no shard file is read until a lookup is forced. Per lookup only the key's shard is read. `db.count` imports every shard file — offline / inspection use only.
+
 NKB (`kv_bin.nix`) has the same API (minus `tableSize`, which is the hash-table size and does not apply to a sorted index):
 
 ```nix
@@ -333,14 +356,16 @@ python3 build_db_bin2.py INPUT.json OUTPUT.nkb2 [--check]
 - `--check`: independent re-parse (validates magic, the embedded 255-byte table, absence of NUL, and exact size) + binary-search of every key plus a known miss.
 - Width guards (b254): `N`/`keyTotal`/`valTotal`/lengths < 254³ ≈ 16.4 MB, `keyOff`/`valOff`/file size < 254⁴ ≈ 4.16 GB, no NUL.
 
-The NFK v3 builder:
+The NFK v3 builder (single file or sharded):
 
 ```sh
 python3 build_db3.py INPUT.json OUTPUT.nfd3 [--check]
+python3 build_db3.py INPUT.json --shards {16,256,4096} --prefix DIR/ [--check]
 ```
 
 - Input: a JSON object with string keys and **arbitrary JSON values** — string values are stored raw; non-string values are stored as compact JSON documents, which `getJson`/`getOrJson` decode (all other builders require string values).
-- `--check`: independent re-parse (validates magic, reserved header spaces, the embedded 255-byte table, absence of NUL, and the exact file size) + probe of every key plus a known miss.
+- Sharded mode writes `DIR/<h[24:24+d]>.nfd3` for every shard, including empty ones (see the sharding subsection under the NFK v3 format); single-file mode is unchanged.
+- `--check`: independent re-parse (validates magic, reserved header spaces, the embedded 255-byte table, absence of NUL, and the exact file size) + probe of every key plus a known miss; in sharded mode, shard membership is re-derived and every key is re-probed through the shard files.
 - Width guards: N/total/length < 254³ bytes, M/offsets < 254⁴, no NUL.
 
 ## Correctness
@@ -366,6 +391,9 @@ nix eval --impure --expr '(import ./test_correctness_bin2.nix) "large"'
 
 Expected: `ok = true`, `mismatchCount = 0` on all datasets (1,255,025 lookups across the five formats).
 
+The multiverse sharded indexes (256 shards each) are also checked against the `fromJSON` oracle in `multiverse-faster/test_correctness_shards.nix`: `mismatches = 0`, misses → `null`, `count = 31904` for both.
+
+
 ## Performance summary
 
 Benchmarked on the 200k-key table (14 MB JSON) with 15 cold `nix eval` runs per point, same session for all five custom formats (median; per-format harness in `bench.py` / `bench_marginal.py`, `fromJSON` via the same harness — see [REPORT.md](REPORT.md)):
@@ -380,7 +408,7 @@ Benchmarked on the 200k-key table (14 MB JSON) with 15 cold `nix eval` runs per 
 | DB file size, 200k keys | 33.3 MB (2.40× JSON) | 18.1 MB (1.30× JSON) | 17.1 MB (1.23× JSON) | **15.1 MB** (1.09× JSON) | 16.3 MB (1.17× JSON) | 13.9 MB |
 | `readFile` floor, 200k keys | 97.2 ms | 77.1 ms | 79.6 ms | **57.3 ms** | 60.4 ms | 57.8 ms read + 201 ms parse (259.0 ms total) |
 
-All five custom formats beat `fromJSON` cold at realistic eval sizes (1.69×–3.50× at 50k–200k keys): NKB v2 and NFK v3 split the cold-lookup lead by 0.2 ms (readFile floor 57.3 vs 60.4 ms), NFK v3 wins the warm multi-lookup eval (72.0 ms warm-200 vs 82.1 NFK v2, 84.9 NKB v2, 97.1 NKB v1, 105.4 NFK v1), and NFK v2's 9.9 µs/lookup takes over above ~800 lookups/eval. Bulk scans (thousands of lookups per eval) tip back to `fromJSON`'s sub-µs attrset. Full cost model, crossovers, and trade-offs: [REPORT.md](REPORT.md).
+All five custom formats beat `fromJSON` cold at realistic eval sizes (1.69×–3.50× at 50k–200k keys): NKB v2 and NFK v3 split the cold-lookup lead by 0.2 ms (readFile floor 57.3 vs 60.4 ms), NFK v3 wins the warm multi-lookup eval (72.0 ms warm-200 vs 82.1 NFK v2, 84.9 NKB v2, 97.1 NKB v1, 105.4 NFK v1), and NFK v2's 9.9 µs/lookup takes over above ~800 lookups/eval. Bulk scans (thousands of lookups per eval) tip back to `fromJSON`'s sub-µs attrset. Full cost model, crossovers, and trade-offs: [REPORT.md](REPORT.md). Sharding (NFK v3 only, `kv3s.nix`): on the multiverse workload, reading a 256-shard directory instead of the whole table drops the single-lookup intercept from 43–48 ms to ≈34 ms (≈ the ~32–35 ms eval startup floor) and stays ahead of the single-file table up to ~100 lookups/eval — `kv3s.nix` builds the 255-byte decode table once per eval and shares it into every shard import (kv3.nix's `{ file, table }` form), so each shard import costs ~0.2 ms; single-file NFK v3 wins again from ~200 lookups/eval (see `multiverse-faster/README.md`).
 
 ## Repo layout
 
@@ -388,13 +416,14 @@ All five custom formats beat `fromJSON` cold at realistic eval sizes (1.69×–3
 |---|---|
 | `kv.nix` | NFK v1 (hash) lookup module (self-contained) |
 | `kv2.nix` | NFK v2 (dense hash) lookup module (self-contained) |
-| `kv3.nix` | NFK v3 (binary hash index) lookup module (self-contained; fastest multi-lookup eval) |
+| `kv3.nix` | NFK v3 (binary hash index) lookup module (self-contained; fastest multi-lookup eval; `db` is a path or `{ file, table }` for a shared decode table) |
+| `kv3s.nix` | sharded NFK v3 reader: takes a `--shards` directory, reads only the key's hash shard (lazy; `count` reads all shards); builds the 255-byte decode table once per eval and shares it into every shard import |
 | `kv_bin.nix` | NKB v1 (binary search, base-255) lookup module (self-contained) |
 | `kv_bin2.nix` | NKB v2 (binary search, b254) lookup module (self-contained; smallest file) |
 | `gen_kv.py` / `gen_kv2.py` / `gen_kv_bin.py` | emit the corresponding kv module(s) from the format spec (the modules above are the generated output) |
 | `build_db.py` | JSON → NFK v1 builder with independent parser + `--check` |
 | `build_db2.py` | JSON → NFK v2 builder with independent parser + `--check` |
-| `build_db3.py` | JSON → NFK v3 builder with independent parser + `--check` |
+| `build_db3.py` | JSON → NFK v3 builder (single file or sharded `--shards/--prefix`) with independent parser + `--check` |
 | `build_db_bin.py` | JSON → NKB v1 builder with independent parser + `--check` |
 | `build_db_bin2.py` | JSON → NKB v2 builder with independent parser + `--check` |
 | `gen_data.py` | deterministic test-data generator (1k / 50k / 200k keys) |
@@ -402,8 +431,8 @@ All five custom formats beat `fromJSON` cold at realistic eval sizes (1.69×–3
 | `data/` | `small|medium|large.{json,nfd,nfd2,nfd3,nkb,nkb2}` (1k / 50k / 200k keys; `*.nfd3` = NFK v3) |
 | `bench.py`, `bench_marginal.py` | benchmark harnesses, parameterized per format (`--kv/--ext/--label/--out`) |
 | `REPORT.md` | full design + benchmark + trade-off write-up |
-| `multiverse-faster/` | real-world workload: fkzakaria's nixpkgs-multiverse index (31,904 attrs) converted to NFK v3, cold-eval benchmark vs `fromJSON` (results: NFK3 3.2–5.6× faster at every query count) |
-| `suggestions.md` | NFK v3 improvement proposals (sharding, v4 hex-fingerprint slot, cheaper hex decode, builder hardening), 2026-08-20 |
+| `multiverse-faster/` | real-world workload: fkzakaria's nixpkgs-multiverse index (31,904 attrs) converted to NFK v3, cold-eval benchmark of `fromJSON` vs NFK3 vs sharded NFK3 (NFK3 beats fromJSON at every query count — 3.3–5.4× single-file, 3.0–7.3× sharded; sharding drops the single-lookup intercept to ≈34 ms) |
+| `suggestions.md` | NFK v3 improvement proposals (sharding — implemented as `kv3s.nix`; v4 hex-fingerprint slot; cheaper hex decode; builder hardening), 2026-08-20 |
 
 ## Known limitations
 

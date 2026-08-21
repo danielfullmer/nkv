@@ -4,6 +4,15 @@ files.
 
 Usage: python3 build_db3.py input.json output.nfd3 [--check]
 
+Sharded mode (optional; see kv3s.nix): one NFK v3 file per shard slice of
+the key hash h = sha256(key) hex, slice h[24:24+d] (d = 1/2/3 -> 16/256/
+4096 shards; disjoint from the fp slice 0..6 and the s0 slice 56..64):
+
+  python3 build_db3.py input.json --shards 256 --prefix dir/ [--check]
+
+Every shard is written (empty shards are valid NFK v3 files with N = 0,
+M = 16), so the Nix wrapper always resolves a key to an existing file;
+only the needed shard is read per lookup.
 NFK v3 layout (all offsets absolute, chars == bytes):
   0..3     magic "NFK3"
   4..6     N         (3 b254 bytes)
@@ -48,6 +57,7 @@ kv3.nix getJson/getOrJson decode them back with builtins.fromJSON.
 import argparse
 import hashlib
 import json
+import os
 import sys
 
 MAGIC = b"NFK3"
@@ -248,15 +258,86 @@ def python_get(path, key):
     return python_get_data(open(path, "rb").read(), key)
 
 
+def shard_slice(key, digits):
+    """Shard slice of sha256(key): hex chars [24:24+digits] — disjoint from
+    the fp slice 0..6 and the s0 slice 56..64 used by kv3.nix."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[24:24 + digits]
+
+
+def shard_names(digits):
+    """All 16**digits shard slice names, e.g. ['00', '01', ..., 'ff']."""
+    return [format(i, "0%dx" % digits) for i in range(16 ** digits)]
+
+
+def build_sharded(pairs, digits, prefix):
+    """Write one NFK v3 file per shard slice into prefix/. Every shard is
+    written (empty ones are valid NFK v3 files: N = 0, M = 16), so the
+    Nix wrapper never needs a missing-file branch. Returns
+    {slice: (n, m, size)} over all shards."""
+    os.makedirs(prefix, exist_ok=True)
+    groups = {}
+    for k, v in pairs.items():
+        groups.setdefault(shard_slice(k, digits), []).append((k, v))
+    stats = {}
+    for s in shard_names(digits):
+        blob = build(groups.get(s, []))
+        with open(os.path.join(prefix, s + ".nfd3"), "wb") as f:
+            f.write(blob)
+        stats[s] = (dec(blob[4:7], FL), dec(blob[7:11], FO), len(blob))
+    return stats
+
+
+def check_sharded(pairs, digits, prefix):
+    """Sharded --check: parse every shard file independently, then probe
+    each key with the Python probe implementation in its own shard."""
+    blobs = {}
+    total = 0
+    for s in shard_names(digits):
+        path = os.path.join(prefix, s + ".nfd3")
+        n, m, entries = parse(path)
+        if len({k for k, _ in entries}) != n:
+            sys.exit(f"check: duplicate keys in {s}.nfd3")
+        total += n
+        blobs[s] = open(path, "rb").read()
+    if total != len(pairs):
+        sys.exit(f"check: shard entry total {total} != input {len(pairs)}")
+    bad = 0
+    for k, v in pairs.items():
+        s = shard_slice(k, digits)
+        want = norm_value(v).decode("utf-8")
+        got = python_get_data(blobs[s], k)
+        if got != want:
+            bad += 1
+            if bad <= 5:
+                print(f"MISMATCH {k!r} [{s}]: want {want!r} got {got!r}",
+                      file=sys.stderr)
+    miss = "\x01\x02__definitely_missing__"
+    if python_get_data(blobs[shard_slice(miss, digits)], miss) is not None:
+        print("check: unexpected hit for absent key", file=sys.stderr)
+        bad += 1
+    if bad:
+        print(f"check: {len(pairs) - bad}/{len(pairs)} ok  FAIL")
+        sys.exit(1)
+    print(f"check: {len(pairs)}/{len(pairs)} ok across "
+          f"{16 ** digits} shards (miss -> None)")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("input")
-    ap.add_argument("output")
+    ap.add_argument("output", nargs="?",
+                    help="output file (single-file mode); omit with --shards")
     ap.add_argument(
         "--check",
         action="store_true",
         help="verify every key with an independent probe",
     )
+    ap.add_argument(
+        "--shards", type=int, default=0,
+        help="sharded mode: 16, 256 or 4096 files (see --prefix)",
+    )
+    ap.add_argument("--prefix", default=None,
+                    help="output directory for sharded mode")
     args = ap.parse_args()
 
     with open(args.input) as f:
@@ -266,6 +347,32 @@ def main():
     for k in pairs:
         if not isinstance(k, str):
             sys.exit(f"non-string key: {k!r}")
+
+    if args.shards:
+        digits = {16: 1, 256: 2, 4096: 3}.get(args.shards)
+        if digits is None:
+            sys.exit("--shards must be 16, 256 or 4096")
+        if args.output:
+            sys.exit("--shards mode: omit the output file (use --prefix)")
+        if not args.prefix:
+            sys.exit("--shards requires --prefix <dir>")
+        stats = build_sharded(pairs, digits, args.prefix)
+        ns = [s[0] for s in stats.values() if s[0]]
+        sizes = [s[2] for s in stats.values()]
+        print(
+            f"wrote {len(stats)} shards in {args.prefix}/: "
+            f"{len(pairs)} entries, keys/shard "
+            f"{min(ns) if ns else 0}..{max(ns) if ns else 0}, "
+            f"file {min(sizes)}..{max(sizes)} bytes"
+        )
+        if args.check:
+            check_sharded(pairs, digits, args.prefix)
+        return
+
+    if not args.output:
+        sys.exit("output file required (or use --shards --prefix)")
+    if args.prefix:
+        sys.exit("--prefix requires --shards")
 
     data = build(list(pairs.items()))
     with open(args.output, "wb") as f:
