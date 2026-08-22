@@ -51,8 +51,13 @@
 # the probe-seed slice h[56:64], so sharding does not perturb the
 # probing distribution. The builder writes every shard (empty ones are
 # valid nkv files with N = 0, M = 16), so a key always resolves to an
-# existing file; only the shard a key hashes to is read per lookup (the
-# Nix import cache keeps it for the rest of the eval). `count` reads
+# existing file. Each shard file is read at most once per eval: the
+# reader holds one shared `open` thunk per shard name, and Nix's
+# call-by-need sharing forces a shard's readFile + header decode only
+# on the first lookup that touches it (shards no key lands in are
+# never read). `readFile` is not memoized by path — a fresh `open` per
+# lookup would re-read the shard file every time — so the shared thunk
+# is what makes repeated lookups on the same shard free. `count` reads
 # every shard — offline use.
 #
 # See README.md for the format and benchmarks.
@@ -176,9 +181,17 @@ let
     tableSize = m;
   };
 
-  # A --shards directory -> db that reads only the key's shard per
-  # lookup. args: { digits ? 2, dir } — digits 1 | 2 | 3 -> 16 | 256 |
-  # 4096 shards, must match the builder's --shards.
+  # A --shards directory -> db. args: { digits ? 2, dir } — digits
+  # 1 | 2 | 3 -> 16 | 256 | 4096 shards, must match the builder's
+  # --shards.
+  #
+  # A shard file is read at most once per eval: `dbs` holds one
+  # unforced `open` thunk per shard name, and Nix's call-by-need
+  # sharing forces a shard's readFile + header decode on the first
+  # lookup that touches it — every later lookup reuses the same value,
+  # and shards no key lands in are never read. Nix has no readFile
+  # content cache (a fresh `open` per lookup would re-read the shard
+  # file every time), so the shared thunk is the caching mechanism.
   sharded = { digits ? 2, dir }:
   let
     # key -> shard slice, e.g. "3f". Same computation as the builder's
@@ -186,30 +199,44 @@ let
     shard = key:
       builtins.substring 24 digits (builtins.hashString "sha256" key);
 
-    # key -> the nkv module for that key's shard file.
-    db = key: open (dir + "/${shard key}.nkv");
+    # key -> shard file path.
+    file = key: dir + "/${shard key}.nkv";
+
+    # All 2^digits shard names: every lowercase-hex string of length
+    # `digits` ("0".."f" | "00".."ff" | "000".."fff"), built by
+    # prefixing each hex char to the shorter names (this Nix has no
+    # baseConvert / genString).
+    hexNames = d:
+      if d == 0 then [ "" ]
+      else builtins.concatMap
+        (c: builtins.map (s: c + s) (hexNames (d - 1)))
+        (builtins.genList (i: builtins.substring i 1 "0123456789abcdef") 16);
+
+    # One unforced `open` thunk per shard name, shared for the whole
+    # eval: building this attrset is O(2^digits) thunks (sub-ms for
+    # 4096); nothing is forced until a shard is first touched.
+    dbs = builtins.listToAttrs (builtins.map
+      (name: { inherit name;
+                value = open (dir + "/${name}.nkv"); })
+      (hexNames digits));
   in
   assert digits == 1 || digits == 2 || digits == 3;
   {
     # key -> shard slice (debug / shard-size checks).
     shard = shard;
     # key -> shard file path (debug).
-    file = key: dir + "/${shard key}.nkv";
+    file = file;
 
-    get = key: (db key).get key;
-    getOr = key: default: (db key).getOr key default;
-    getJson = key: (db key).getJson key;
-    getOrJson = key: default: (db key).getOrJson key default;
-    has = key: (db key).has key;
+    get = key: (dbs."${shard key}").get key;
+    getOr = key: default: (dbs."${shard key}").getOr key default;
+    getJson = key: (dbs."${shard key}").getJson key;
+    getOrJson = key: default: (dbs."${shard key}").getOrJson key default;
+    has = key: (dbs."${shard key}").has key;
 
-    # Expensive: imports (reads) every shard file. Offline use only —
-    # e.g. verifying the total key count in a correctness run.
-    count =
-      let names = builtins.attrNames (builtins.readDir dir);
-      in builtins.foldl'
-        (a: n: a + (open (dir + "/${n}")).count)
-        0
-        (builtins.filter (n: builtins.substring (builtins.stringLength n - 4) 4 n == ".nkv") names);
+    # Expensive: forces the open of every shard (reads every file).
+    # Offline use only — e.g. verifying the total key count in a
+    # correctness run.
+    count = builtins.foldl' (a: d: a + d.count) 0 (builtins.attrValues dbs);
   };
 in
 # A path is a single nkv file; an attrset { digits, dir } is a
