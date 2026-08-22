@@ -49,7 +49,8 @@
 # h = sha256(key) in lowercase hex and d = digits (1 | 2 | 3 -> 16 |
 # 256 | 4096 shards; must match --shards). The slice is disjoint from
 # the probe-seed slice h[56:64], so sharding does not perturb the
-# probing distribution. The builder writes every shard (empty ones are
+# probing distribution. A lookup hashes the key once: the same digest
+# supplies both the shard slice and the probe seed.
 # valid nkv files with N = 0, M = 16), so a key always resolves to an
 # existing file. Each shard file is read at most once per eval: the
 # reader holds one shared `open` thunk per shard name, and Nix's
@@ -67,15 +68,25 @@ let
   T0 = H;    # index region start
   B = 255;   # base-255 positional base (digit 0..254 -> byte 1..255)
 
-  # hex char -> value; sha256 digests are lowercase hex, ASCII only
-  HEX = {
-    "0" = 0; "1" = 1; "2" = 2; "3" = 3; "4" = 4; "5" = 5;
-    "6" = 6; "7" = 7; "8" = 8; "9" = 9;
-    "a" = 10; "b" = 11; "c" = 12; "d" = 13; "e" = 14; "f" = 15;
-  };
+  # Hex digits as a string, and the 2-char hex -> 0..255 pair table.
+  # PAIR is built once per eval, lazily, from the digit string (this
+  # Nix has no baseConvert / genString / parseInt), so decoding the
+  # 8-char probe seed costs 4 table lookups instead of 8.
+  HEXDIGITS = "0123456789abcdef";
+  PAIR = builtins.listToAttrs (builtins.genList
+    (i: { name = "${builtins.substring (builtins.div i 16) 1 HEXDIGITS}${builtins.substring (builtins.bitAnd i 15) 1 HEXDIGITS}";
+          value = i; })
+    256);
 
-  # One nkv file (path) -> db with get/getOr/getJson/getOrJson/has/
-  # count/tableSize.
+  # Hex string of even length -> int: v = v * 256 + pair, one PAIR
+  # lookup per 2 chars.
+  hexInt = s:
+    builtins.foldl' (v: i: v * 256 + PAIR."${builtins.substring (i * 2) 2 s}")
+      0
+      (builtins.genList (i: i) (builtins.div (builtins.stringLength s) 2));
+
+  # One nkv file (path) -> db with get/getDigest/getOr/getJson/
+  # getOrJson/has/count/tableSize.
   open = path:
   let
     raw = builtins.readFile path;
@@ -91,13 +102,6 @@ let
 
     # 4 bytes -> value < 255^4 (offsets, table size)
     dec4 = p: ((byte p * B + byte (p + 1)) * B + byte (p + 2)) * B + byte (p + 3);
-
-    # hex string -> int (no builtins.parseInt; one HEX lookup per char)
-    hexInt = s: let
-      L = builtins.stringLength s;
-    in builtins.foldl' (v: i: v * 16 + HEX."${builtins.substring i 1 s}")
-      0
-      (builtins.genList (i: i) L);
 
     # Header fields.
     n = dec3 4;
@@ -149,11 +153,15 @@ let
             else probe key s0 (i + 1);
 
     get = key:
-      let
-        h = builtins.hashString "sha256" key;
-        s0 = builtins.bitAnd (hexInt (builtins.substring 56 8 h)) (m - 1);
-      in
-        probe key s0 0;
+      probe key
+        (hexInt (builtins.substring 56 8 (builtins.hashString "sha256" key))) 0;
+
+    # get with a caller-supplied sha256 hex digest: the sharded reader
+    # hashes once per lookup and passes the same digest as both the
+    # shard slice and the probe seed (the probe masks the seed to the
+    # table width at step 0).
+    getDigest = key: h:
+      probe key (hexInt (builtins.substring 56 8 h)) 0;
   in
   assert (builtins.substring 0 4 raw) == "NKV4";
   assert koffW >= 1 && koffW <= 4
@@ -162,6 +170,7 @@ let
   in
   {
     get = get;
+    getDigest = getDigest;
 
     # JSON mode: values are opaque; when a value holds a JSON document,
     # getJson/getOrJson return builtins.fromJSON of the stored string
@@ -191,7 +200,9 @@ let
   # lookup that touches it — every later lookup reuses the same value,
   # and shards no key lands in are never read. Nix has no readFile
   # content cache (a fresh `open` per lookup would re-read the shard
-  # file every time), so the shared thunk is the caching mechanism.
+  # file every time), so the shared thunk is the caching mechanism. A
+  # lookup hashes the key once: the same digest supplies both the
+  # shard slice and the probe seed.
   sharded = { digits ? 2, dir }:
   let
     # key -> shard slice, e.g. "3f". Same computation as the builder's
@@ -219,6 +230,24 @@ let
       (name: { inherit name;
                 value = open (dir + "/${name}.nkv"); })
       (hexNames digits));
+    # One sha256 per lookup: the digest feeds both the shard slice
+    # h[24:24+d] and the probe seed (via getDigest). The get family
+    # lives in the let (not the result attrset) so getOr/getJson/
+    # getOrJson/has can build on get.
+    get = key:
+      let h = builtins.hashString "sha256" key;
+      in (dbs."${builtins.substring 24 digits h}").getDigest key h;
+    getOr = key: default:
+      let v = get key;
+      in if v == null then default else v;
+    getJson = key:
+      let v = get key;
+      in if v == null then null else builtins.fromJSON v;
+    getOrJson = key: default:
+      let v = get key;
+      in if v == null then default else builtins.fromJSON v;
+    has = key: get key != null;
+
   in
   assert digits == 1 || digits == 2 || digits == 3;
   {
@@ -227,11 +256,9 @@ let
     # key -> shard file path (debug).
     file = file;
 
-    get = key: (dbs."${shard key}").get key;
-    getOr = key: default: (dbs."${shard key}").getOr key default;
-    getJson = key: (dbs."${shard key}").getJson key;
-    getOrJson = key: default: (dbs."${shard key}").getOrJson key default;
-    has = key: (dbs."${shard key}").has key;
+    # key -> value (or null): one sha256 per lookup, shard slice and
+    # probe seed from the same digest (defined in the let above).
+    inherit get getOr getJson getOrJson has;
 
     # Expensive: forces the open of every shard (reads every file).
     # Offline use only — e.g. verifying the total key count in a

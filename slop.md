@@ -116,7 +116,7 @@ Measured shard sizes (256-shard build, EW 4): 46,025–62,052 B on the 200k tabl
 
 ## Nix-side workarounds
 
-- **Hex fold** — a 16-entry inline table folds 8 hex chars into a decimal integer (1–4 table lookups per field, width from the header) to get the probe seed, since `parseInt` is unavailable.
+- **Hex fold** — a 256-entry two-hex-char table (built lazily once per eval from the digit string) folds the 8-char probe seed into an integer in 4 table lookups (this Nix has no `parseInt` and no `builtins.mod`: `div` + `bitAnd i 15`); base-255 field decoding is per-byte lookups in the 255-entry decode table (1–4 lookups, width from the header).
 - **Integer math without `%`** — the hash has no `%`; everything integer is `/`, `div`, `bitAnd` with power-of-two `M`.
 - **Binary-safe decode** — field digits are bytes `0x01`–`0xFE`; value bytes pass through as raw (Nix strings hold arbitrary bytes; UTF-8 decoding is applied to source literals, not to `readFile` results).
 - **No mutation** — Nix eval is pure; the index is read-only at eval time.
@@ -220,7 +220,7 @@ Full per-point tables in [`multiverse-faster/README.md`](multiverse-faster/READM
 **Verdict from the numbers:**
 
 - **nkv (single file)** beats `fromJSON` at every measured point on 50k+ entry tables, on the data work: 9.4× at 50k, 7.6× (n = 1) / 6.7× (n = 200) on 200k, 8–12× versions, 11–18× history; at 1k the two are at parity (work 1.1 vs 0.1 ms — startup-bound).
-- **Sharded nkv** adds the low-query regime: ~34 ms total per cold lookup on 200k keys (work 1.2 ms, ≈146× the data work of `fromJSON`), ahead of single-file up to ~100–200 lookups on the multiverse tables (pre-fix measurement) and across the whole measured range on the 13.7 MB table — including 10,000 lookups/eval, where the open-once reader beats single-file, 211 vs 223 ms.
+- **Sharded nkv** adds the low-query regime: ~34 ms total per cold lookup on 200k keys (work 1.2 ms, ≈146× the data work of `fromJSON`), ahead of single-file up to ~100–200 lookups on the multiverse tables (pre-fix measurement) and across the whole measured range on the 13.7 MB table — including 10,000 lookups/eval, where the open-once, single-hash-per-lookup reader beats single-file, 186 vs 206 ms (median of 3).
 - **`fromJSON`** remains the right tool when one evaluation touches a large fraction of the table.
 
 ## Trade-offs and known limitations
